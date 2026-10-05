@@ -5,3 +5,5 @@
 *.user
 *.suo
 /outputs/JMEngine/*.exe
+/work/
+/imgui.ini
