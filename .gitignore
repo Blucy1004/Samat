@@ -1,0 +1,7 @@
+/build*/
+/out/
+/.vs/
+/.idea/
+*.user
+*.suo
+/outputs/JMEngine/*.exe

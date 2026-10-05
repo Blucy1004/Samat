@@ -1,0 +1,65 @@
+# JM IR and Native Compilation
+
+## Current pipeline
+
+```text
+Samat Code Parser ─┐
+                      ├─> jm::script::Program (JM AST) -> JM IR -> NativeBackend -> executable x86-64 code
+訓機正음 Parser ──────┘
+                              └──────────────────────────────> existing Interpreter (development path)
+```
+
+`parseCode` and `parseKorean` now construct the same `Program` / `Statement` / `Expression` types. The Korean parser recognizes Korean declarations, control-flow headers, returns, and mutation statements and creates AST nodes directly; it does not materialize translated Code Syntax source. Both the interpreter and native lowering consume this AST.
+
+Member calls such as `player.jump(force)` carry a deterministic numeric builtin symbol ID in the AST, with a readable `builtin.player.jump` spelling for diagnostics and registration. JM IR keeps both the ID and name; native callback dispatch uses the ID.
+
+JM IR lives in `JMIR.hpp/.cpp`. It has functions, parameters, locals, SSA-like temporary values, explicit basic blocks, typed i64 operations, calls, conditional branches, loops, and returns. For example:
+
+```text
+fn add(a, b):
+    return a + b
+```
+
+becomes (IDs are assigned by the lowerer):
+
+```text
+func add(2 x i64) -> i64 {
+entry:
+  %0 = load.local 0
+  %1 = load.local 1
+  %2 = op.add.i64 %0, %1
+  ret %2
+}
+```
+
+The currently unavailable LLVM backend would map that JM IR to the following LLVM IR shape (illustrative only; this build emits the x86-64 bootstrap backend directly):
+
+```llvm
+define i64 @add(i64 %a, i64 %b) {
+entry:
+  %sum = add i64 %a, %b
+  ret i64 %sum
+}
+```
+
+`NativeBackend` is the target boundary. The current bootstrap implementation, `X64Backend`, emits x86-64 machine instructions into executable memory and invokes them in-process. It is intentionally a narrow backend until LLVM is installed and integrated. The public backend interface allows an LLVM x86-64 backend, LLVM ARM64 backend, or another code generator to be added without changing either parser or the AST.
+
+## Run the prototype compiler
+
+```powershell
+Samat.exe --ir examples/Samat/native-factorial.st
+Samat.exe --native main examples/Samat/native-factorial.st
+Samat.exe --native factorial examples/Samat/native-factorial.st 10
+```
+
+The native command reports the target triple, result, and emitted function machine-code bytes. It uses the same C++ interpreter as the reference path; plain `Samat.exe <file>` continues to run interpreted scripts.
+
+## Native subset and limits
+
+The bootstrap x86-64 backend currently handles signed 64-bit integer and boolean literals, mutable local variables, unary `-`/`!`, `+ - * / %`, comparisons, boolean operators, `if/else`, `while`, direct named calls, parameters, returns, and recursion. Korean functions/returns are supported through the same IR. The smoke test compares an interpreter execution with a native result and separately checks return 42, factorial, Fibonacci, branching, a runtime while loop, and a registered C++ callback.
+
+The JM Engine editor's Language Core tab has a Code / 訓機正音 parser toggle and an **x64 native main 실행** action. Its **네이티브 Factorial** starter loads a program with a `main` function and displays the result, JM IR, and native code size.
+
+Lists/maps, floats, strings, closures, nested declarations, `for`, `break`/`continue`, globals and general engine movement scripts are not native-lowerable yet. The existing interpreter remains the complete development execution path for those features. C++ interop is an explicit `builtin.*` registry with a fixed four-i64 calling signature; native C++ callbacks currently use Windows x64 ABI. Engine API registration (including real player/physics/render/audio adapters) remains to be connected. The JIT currently produces executable memory, not a standalone `.exe`, object file, or AOT package.
+
+LLVM was not present in the build environment, so this milestone does not claim LLVM IR emission or LLVM optimization. The next native milestones are LLVM discovery/configuration, an LLVM backend behind `NativeBackend`, richer value representation for lists/strings, engine builtin bindings, and AOT object/executable linking.

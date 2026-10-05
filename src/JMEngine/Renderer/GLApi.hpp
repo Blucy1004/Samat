@@ -1,0 +1,36 @@
+#pragma once
+
+#include <SDL3/SDL_opengl.h>
+
+namespace jm::gl {
+
+extern PFNGLCREATESHADERPROC CreateShader;
+extern PFNGLSHADERSOURCEPROC ShaderSource;
+extern PFNGLCOMPILESHADERPROC CompileShader;
+extern PFNGLGETSHADERIVPROC GetShaderiv;
+extern PFNGLGETSHADERINFOLOGPROC GetShaderInfoLog;
+extern PFNGLDELETESHADERPROC DeleteShader;
+extern PFNGLCREATEPROGRAMPROC CreateProgram;
+extern PFNGLATTACHSHADERPROC AttachShader;
+extern PFNGLLINKPROGRAMPROC LinkProgram;
+extern PFNGLGETPROGRAMIVPROC GetProgramiv;
+extern PFNGLGETPROGRAMINFOLOGPROC GetProgramInfoLog;
+extern PFNGLDELETEPROGRAMPROC DeleteProgram;
+extern PFNGLGETUNIFORMLOCATIONPROC GetUniformLocation;
+extern PFNGLUSEPROGRAMPROC UseProgram;
+extern PFNGLUNIFORMMATRIX4FVPROC UniformMatrix4fv;
+extern PFNGLUNIFORM1IPROC Uniform1i;
+extern PFNGLUNIFORM3FVPROC Uniform3fv;
+extern PFNGLGENVERTEXARRAYSPROC GenVertexArrays;
+extern PFNGLBINDVERTEXARRAYPROC BindVertexArray;
+extern PFNGLGENBUFFERSPROC GenBuffers;
+extern PFNGLBINDBUFFERPROC BindBuffer;
+extern PFNGLBUFFERDATAPROC BufferData;
+extern PFNGLVERTEXATTRIBPOINTERPROC VertexAttribPointer;
+extern PFNGLENABLEVERTEXATTRIBARRAYPROC EnableVertexAttribArray;
+extern PFNGLDELETEBUFFERSPROC DeleteBuffers;
+extern PFNGLDELETEVERTEXARRAYSPROC DeleteVertexArrays;
+
+bool load();
+
+} // namespace jm::gl
