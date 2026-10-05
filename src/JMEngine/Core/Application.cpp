@@ -199,12 +199,13 @@ void Application::shutdown() noexcept {
     }
 }
 
-void Application::run() {
+std::size_t Application::run(std::size_t maximumFrames) {
     using Clock = std::chrono::steady_clock;
     auto previousFrame = Clock::now();
     running_ = true;
 
-    while (running_) {
+    std::size_t frames=0;
+    while (running_ && (!maximumFrames || frames<maximumFrames)) {
         const auto frameStart = Clock::now();
         const auto elapsed = std::chrono::duration<float>(frameStart - previousFrame).count();
         previousFrame = frameStart;
@@ -213,7 +214,10 @@ void Application::run() {
         processEvents();
         update(deltaSeconds);
         render();
+        if(maximumFrames && glGetError()!=GL_NO_ERROR)throw std::runtime_error("OpenGL error during sandbox smoke rendering.");
+        ++frames;
     }
+    return frames;
 }
 
 void Application::processEvents() {
@@ -624,7 +628,13 @@ void Application::drawLegacyCodePanel() {
 
 void Application::drawLanguageCorePanel() {
     using namespace script;
-    if (ImGui::SmallButton(languageKoreanSyntax_ ? "문법: 訓機正音" : "Syntax: Code")) languageKoreanSyntax_ = !languageKoreanSyntax_;
+    if (ImGui::SmallButton(languageKoreanSyntax_ ? "문법: 訓C正音" : "Syntax: Code")) {
+        Program program;Diagnostic diagnostic;
+        if((languageKoreanSyntax_?parseKorean(languageCodeBuffer_,program,diagnostic):parseCode(languageCodeBuffer_,program,diagnostic))) {
+            try { languageCodeBuffer_=languageKoreanSyntax_?renderCode(program):renderKorean(program);languageKoreanSyntax_=!languageKoreanSyntax_;languageStatus_="같은 AST의 구문 표현을 변환했어요."; }
+            catch(const std::exception& error) { languageStatus_=error.what(); }
+        } else languageStatus_=diagnostic.message;
+    }
     ImGui::SameLine();
     ImGui::TextDisabled("Code / Korean Syntax → same JM AST");
     auto parseEditorProgram=[&](Program& program, Diagnostic& diagnostic) {
@@ -668,6 +678,7 @@ void Application::drawLanguageCorePanel() {
     if (ImGui::Button("컴파일 검사")) {
         Program program; Diagnostic diagnostic;
         languageCompiled_ = parseEditorProgram(program, diagnostic);
+        if(languageCompiled_) { std::vector<Diagnostic> errors;languageCompiled_=check(program,errors);if(!errors.empty())diagnostic=errors.front(); }
         languageStatus_ = languageCompiled_ ? "컴파일 성공 · 문법을 JM AST로 변환했어요." : diagnostic.message;
         languageOutput_.clear();
     }
@@ -683,11 +694,15 @@ void Application::drawLanguageCorePanel() {
                 RunOptions options;
                 options.instructionBudget = 100'000;
                 options.recursionLimit = 128;
+                bool hasMain=false,hasActions=false;
+                for(const auto& statement:program.statements) { hasMain|=statement.kind==Statement::Kind::Function && statement.name=="main";hasActions|=statement.kind!=Statement::Kind::Function && statement.kind!=Statement::Kind::Variable && statement.kind!=Statement::Kind::Import && statement.kind!=Statement::Kind::Event; }
+                if(hasMain && !hasActions)options.entryFunction="main";options.eventName="start";
                 const ExecutionResult result = execute(program, options);
                 languageCompiled_ = true;
                 languageStatus_ = "실행 완료 · " + std::to_string(result.instructionsExecuted) + "개 명령 처리";
                 languageOutput_.clear();
                 for (const std::string& line : result.output) languageOutput_ += line + '\n';
+                if(!options.entryFunction.empty())languageOutput_+="결과: "+result.returnValue.toString()+"\n";
             } catch (const std::exception& error) {
                 languageCompiled_ = false;
                 languageStatus_ = error.what();
@@ -711,6 +726,47 @@ void Application::drawLanguageCorePanel() {
             } catch(const std::exception& error) { languageCompiled_=false; languageStatus_=error.what(); languageOutput_.clear(); }
         }
     }
+
+    ImGui::SameLine();
+    if(ImGui::Button("JM IR 보기")) {
+        Program program;Diagnostic diagnostic;ir::Module module;ir::LoweringDiagnostic lowering;
+        if(!parseEditorProgram(program,diagnostic))languageStatus_=diagnostic.message;
+        else if(!ir::lower(program,module,lowering))languageStatus_=lowering.message;
+        else { languageOutput_=ir::format(module);languageStatus_="JM IR 변환 완료"; }
+    }
+    ImGui::BeginDisabled(!ir::LLVMBackend::available());
+    if(ImGui::Button("LLVM JIT main 실행")) {
+        Program program;Diagnostic diagnostic;ir::Module module;ir::LoweringDiagnostic lowering;
+        if(!parseEditorProgram(program,diagnostic))languageStatus_=diagnostic.message;
+        else if(!ir::lower(program,module,lowering))languageStatus_=lowering.message;
+        else try { ir::LLVMBackend backend;auto code=backend.compile(module);languageOutput_="결과: "+code.invokeValue("main").toString();languageStatus_="LLVM JIT 실행 완료"; }
+        catch(const std::exception& error) { languageStatus_=error.what(); }
+    }
+    ImGui::SameLine();
+    if(ImGui::Button("LLVM IR 보기")) {
+        Program program;Diagnostic diagnostic;ir::Module module;ir::LoweringDiagnostic lowering;
+        if(!parseEditorProgram(program,diagnostic))languageStatus_=diagnostic.message;
+        else if(!ir::lower(program,module,lowering))languageStatus_=lowering.message;
+        else try { languageOutput_=ir::LLVMBackend{}.emitIR(module);languageStatus_="LLVM IR 검증 완료"; }
+        catch(const std::exception& error) { languageStatus_=error.what(); }
+    }
+    ImGui::SameLine();
+    if(ImGui::Button("AOT 빌드")) {
+        Program program;Diagnostic diagnostic;ir::Module module;ir::LoweringDiagnostic lowering;
+        if(!parseEditorProgram(program,diagnostic))languageStatus_=diagnostic.message;
+        else if(!ir::lower(program,module,lowering))languageStatus_=lowering.message;
+        else try {
+            std::filesystem::create_directories("build/editor");
+#ifdef _WIN32
+            const std::string output="build/editor/JMProgram.exe";
+#else
+            const std::string output="build/editor/JMProgram";
+#endif
+            ir::LLVMBackend{}.build(module,output);languageStatus_="AOT 실행 파일 생성: "+output;
+        } catch(const std::exception& error) { languageStatus_=error.what(); }
+    }
+    ImGui::EndDisabled();
+    if(!ir::LLVMBackend::available())ImGui::TextDisabled("LLVM 개발 패키지가 없어 LLVM JIT / IR / AOT가 비활성화돼 있어요.");
 
     const float helpHeight = 92.0F;
     const float resultHeight = languageOutput_.empty() ? 34.0F : (languageOutput_.find("JM IR") != std::string::npos ? 190.0F : 90.0F);

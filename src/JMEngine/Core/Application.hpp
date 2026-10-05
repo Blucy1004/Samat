@@ -29,7 +29,7 @@ public:
     Application(const Application&) = delete;
     Application& operator=(const Application&) = delete;
 
-    void run();
+    std::size_t run(std::size_t maximumFrames = 0);
 
 private:
     void processEvents();

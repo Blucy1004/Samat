@@ -217,7 +217,7 @@ void checkNativeBackend() {
     Program interpreterProgram; Diagnostic interpreterDiagnostic;
     require(parseCode(source+"let result = main()\n",interpreterProgram,interpreterDiagnostic),"Interpreter comparison source must parse.");
     const auto interpreted=execute(interpreterProgram);
-    require(std::get<double>(interpreted.globals->get("result").data)==126.0,"Interpreter reference result must be stable.");
+    require(interpreted.globals->get("result").toString()=="126","Interpreter reference result must be stable.");
     Module module; LoweringDiagnostic loweringDiagnostic;
     require(lower(program,module,loweringDiagnostic),("AST must lower to JM IR: "+loweringDiagnostic.message).c_str());
     const std::string irText=format(module);
@@ -226,7 +226,7 @@ void checkNativeBackend() {
     X64Backend backend;
     NativeCode native=backend.compile(module);
     require(!native.machineCode("main").empty(),"x86-64 backend must emit machine code.");
-    const auto interpretedValue=static_cast<std::int64_t>(std::get<double>(interpreted.globals->get("result").data));
+    const auto interpretedValue=std::stoll(interpreted.globals->get("result").toString());
     const auto nativeValue=native.invoke("main");
     require(nativeValue==interpretedValue,("Native result "+std::to_string(nativeValue)+" must match interpreter "+std::to_string(interpretedValue)+".").c_str());
     require(native.invoke("factorial",{5})==120,"Native function parameters and recursion must execute.");

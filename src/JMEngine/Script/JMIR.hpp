@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace jm::script::ir {
@@ -15,7 +16,8 @@ using BlockId = std::uint32_t;
 
 enum class Op { Constant, Load, Store, Add, Subtract, Multiply, Divide, Modulo,
                 Negate, LogicalNot, ToBoolean, Equal, NotEqual, Less, LessEqual, Greater,
-                GreaterEqual, BooleanAnd, BooleanOr, Call };
+                GreaterEqual, BooleanAnd, BooleanOr, Call, FloatConstant, IntToFloat,
+                GlobalLoad, GlobalStore };
 
 struct Instruction {
     Op op{Op::Constant};
@@ -27,6 +29,9 @@ struct Instruction {
     std::string symbol;
     std::uint64_t symbolId{};
     std::vector<ValueId> arguments;
+    Type type{Type::Int};
+    double floating{};
+    std::vector<std::string> argumentNames;
 };
 
 struct Terminator {
@@ -49,13 +54,19 @@ struct Function {
     std::uint32_t localCount{};
     std::uint32_t valueCount{};
     std::vector<BasicBlock> blocks;
+    Type returnType{Type::Int};
+    std::vector<Type> parameterTypes, localTypes, valueTypes;
 };
 
-struct Module { std::vector<Function> functions; };
+struct Global { std::string name; Type type{Type::Int}; bool constant{}; };
+struct EventBinding { std::string event, function; };
+struct Module { std::vector<Function> functions; std::vector<Global> globals; std::vector<EventBinding> events; std::vector<std::string> imports; };
 struct LoweringDiagnostic { std::string message; };
 
 bool lower(const Program& program, Module& output, LoweringDiagnostic& diagnostic);
 std::string format(const Module& module);
+bool verify(const Module& module, LoweringDiagnostic& diagnostic);
+Module optimize(const Module& module);
 
 class NativeCode {
 public:
@@ -70,14 +81,19 @@ public:
     std::int64_t invoke(const std::string& function,
                         const std::vector<std::int64_t>& arguments = {}) const;
     const std::vector<std::uint8_t>& machineCode(const std::string& function) const;
-    bool empty() const { return memory_ == nullptr; }
+    bool empty() const { return memory_ == nullptr && !invoker_; }
+    Value invokeValue(const std::string& function, const std::vector<Value>& arguments = {}) const;
 
 private:
     friend class X64Backend;
+    friend class LLVMBackend;
     void* memory_{};
     std::size_t memorySize_{};
     std::unordered_map<std::string, std::size_t> offsets_;
     std::unordered_map<std::string, std::vector<std::uint8_t>> code_;
+    std::unordered_map<std::string, std::uint32_t> arities_;
+    std::unordered_map<std::string, Type> returnTypes_;
+    std::function<Value(const std::string&, const std::vector<Value>&)> invoker_;
 };
 
 class NativeBackend {
@@ -89,11 +105,38 @@ public:
 
 class NativeFunctionRegistry {
 public:
+    struct Metadata {
+        std::string symbol, displayName, koreanName, documentation;
+        std::vector<std::string> parameterNames;
+        std::vector<Type> parameterTypes;
+        Type returnType{Type::Int};
+    };
     using Function = std::int64_t(*)(std::int64_t, std::int64_t, std::int64_t, std::int64_t);
     void registerFunction(std::string stableSymbol, Function function);
     Function find(std::uint64_t stableSymbolId) const;
+    void registerModule(std::string identity);
+    bool hasModule(std::string_view identity) const;
+    void registerFunction(Metadata metadata, Function function);
+    const Metadata* metadata(std::uint64_t stableSymbolId) const;
 private:
     std::unordered_map<std::uint64_t, Function> functions_;
+    std::unordered_map<std::uint64_t, Metadata> metadata_;
+    std::unordered_set<std::string> modules_;
+};
+
+// Optional consumer of JM IR. Builds without LLVM retain all other backends.
+class LLVMBackend final : public NativeBackend {
+public:
+    explicit LLVMBackend(bool optimized = false, std::string target = {});
+    static bool available();
+    std::string targetTriple() const override;
+    NativeCode compile(const Module& module, const NativeFunctionRegistry& registry = {}) const override;
+    std::string emitIR(const Module& module) const;
+    void emitObject(const Module& module, const std::string& path, bool entryWrapper = false) const;
+    void build(const Module& module, const std::string& output, const std::string& linker = {}) const;
+private:
+    bool optimized_{};
+    std::string target_;
 };
 
 // Bootstrap backend: emits executable x86-64 machine code for the scalar i64 subset.

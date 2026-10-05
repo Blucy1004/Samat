@@ -1,0 +1,10 @@
+가져온다 jm.game
+함수 jumpPlayer():
+    player.grounded라면:
+        실행한다 player.jump(force: 12)
+시작할 때:
+    실행한다 player.move(direction: 0, speed: 8)
+오른쪽 키를 누르는 동안:
+    실행한다 player.move(direction: 1, speed: 8)
+스페이스 키를 눌렀을 때:
+    실행한다 jumpPlayer()

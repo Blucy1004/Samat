@@ -1,4 +1,6 @@
-# Samat Language Core v0.1
+# Samat Language Core
+
+For the current v0.5 types, syntax, safety, and backend capabilities, see [Samat v0.5](Samat-v0.5.md). The historical milestone description follows.
 
 Samat now has a standalone calculation runtime in `jm::script`. It does not depend on a running JM Engine scene. The engine-facing runtime can provide host functions through `HostFunction`; the value model and parser remain usable without those APIs.
 
@@ -26,6 +28,6 @@ The initial 訓機正音 subset supports numeric variable declarations, `함수 
 - Korean and Code spellings of the same while program, compared structurally and executed
 - the existing Player movement and jump simulation regression
 
-Build and run the suite with CMake/CTest. The runtime currently represents numeric values as `double` (whole-number values are supported, but there is no distinct Integer variant), and it does not yet implement closures, nested function declarations, input streams, or a debugger UI. These are follow-on language/runtime features, not engine-only commands.
+Build and run the suite with CMake/CTest. The v0.5 runtime now separates exact Int/i64 values and Float/f64; and it does not yet implement closures, nested function declarations, input streams, or a debugger UI. These are follow-on language/runtime features, not engine-only commands.
 
 An experimental AST → JM IR → executable x86-64 backend is available for a strict integer subset. See [Samat Native Compilation](Samat-Native-Compilation.md) for the target boundary, CLI commands, parity tests, and current limitations.

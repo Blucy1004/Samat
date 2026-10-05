@@ -1,0 +1,12 @@
+가져온다 jm.math
+실수 변수 moveSpeed를 8.0로 정한다.
+정수 변수 globalScore를 0로 정한다.
+함수 factorial(n: Int) -> Int:
+    (n <= 1)라면:
+        1를 반환한다.
+    (n * factorial((n - 1)))를 반환한다.
+함수 main() -> Int:
+    globalScore를 1만큼 늘린다.
+    ((factorial(10) == 3628800) and (globalScore == 1))라면:
+        42를 반환한다.
+    1를 반환한다.

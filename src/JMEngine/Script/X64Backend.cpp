@@ -1,4 +1,5 @@
 #include "JMEngine/Script/JMIR.hpp"
+#include "JMEngine/Script/StandardLibrary.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -17,6 +18,13 @@
 namespace jm::script::ir {
 namespace {
 
+thread_local int arithmeticError{};
+std::int64_t checkedDivide(std::int64_t a,std::int64_t b,std::int64_t remainder,std::int64_t) noexcept {
+    if(b==0) { arithmeticError=1;return 0; }
+    if(a==std::numeric_limits<std::int64_t>::min() && b==-1) { arithmeticError=2;return 0; }
+    return remainder?a%b:a/b;
+}
+std::int64_t faultStatus(std::int64_t,std::int64_t,std::int64_t,std::int64_t) noexcept { return arithmeticError; }
 using Bytes = std::vector<std::uint8_t>;
 void u32(Bytes& out, std::uint32_t v) { for (int i=0;i<4;++i) out.push_back(static_cast<std::uint8_t>((v>>(i*8))&0xff)); }
 void u64(Bytes& out, std::uint64_t v) { for (int i=0;i<8;++i) out.push_back(static_cast<std::uint8_t>((v>>(i*8))&0xff)); }
@@ -36,6 +44,19 @@ struct CompiledFunction { std::size_t start{}; std::size_t size{}; std::uint32_t
 void emitLoadValue(Bytes& code, const Function& f, ValueId value) { memRbp(code,{0x48,0x8b,0x85}, f.localCount + value); }
 void emitStoreValue(Bytes& code, const Function& f, ValueId value) { memRbp(code,{0x48,0x89,0x85}, f.localCount + value); }
 
+void emitFaultCheck(Bytes& code) {
+    code.insert(code.end(),{0x48,0x83,0xec,0x20,0x48,0xb8});u64(code,reinterpret_cast<std::uintptr_t>(&faultStatus));
+    code.insert(code.end(),{0xff,0xd0,0x48,0x83,0xc4,0x20,0x48,0x85,0xc0,0x74,0x04,0x31,0xc0,0xc9,0xc3});
+}
+void validateCall(const Instruction& in,const NativeFunctionRegistry& registry,const Function& fn) {
+    const auto* info=registry.metadata(in.symbolId);
+    if(info && info->parameterTypes.size()!=in.arguments.size())throw std::runtime_error("Native registry argument count mismatch: "+in.symbol);
+    if(info) {
+        if(info->returnType!=in.type)throw std::runtime_error("Native registry return type does not match JM IR: "+in.symbol);
+        for(std::size_t i=0;i<in.arguments.size();++i)if(fn.valueTypes.at(in.arguments[i])!=info->parameterTypes[i])throw std::runtime_error("Native registry parameter type mismatch: "+in.symbol);
+    }
+    for(std::size_t i=0;i<in.argumentNames.size();++i)if(!in.argumentNames[i].empty() && (!info || in.argumentNames[i]!=info->parameterNames[i]))throw std::runtime_error("Native named arguments require matching registry metadata order: "+in.symbol);
+}
 CompiledFunction emitFunction(Bytes& code, const Function& f, std::vector<Pending>& calls,
                               const NativeFunctionRegistry& registry) {
     CompiledFunction compiled; compiled.start = code.size(); compiled.parameterCount = f.parameterCount;
@@ -63,28 +84,32 @@ CompiledFunction emitFunction(Bytes& code, const Function& f, std::vector<Pendin
             case Op::ToBoolean: emitLoadValue(code,f,in.left); code.insert(code.end(),{0x48,0x85,0xc0,0x0f,0x95,0xc0,0x48,0x0f,0xb6,0xc0}); emitStoreValue(code,f,in.result); break;
             case Op::Call:
                 if (const auto external = registry.find(in.symbolId)) {
+                    validateCall(in,registry,f);
                     if (in.arguments.size() > 4) throw std::runtime_error("Native C++ interop currently supports up to four i64 arguments.");
-#if !defined(_WIN32)
-                    throw std::runtime_error("C++ native interop currently requires the Windows x64 ABI.");
-#else
                     for (std::size_t i=0;i<in.arguments.size();++i) {
                         emitLoadValue(code,f,in.arguments[i]);
+#if defined(_WIN32)
                         if (i==0) code.insert(code.end(),{0x48,0x89,0xc1});
                         else if (i==1) code.insert(code.end(),{0x48,0x89,0xc2});
                         else if (i==2) code.insert(code.end(),{0x49,0x89,0xc0});
                         else code.insert(code.end(),{0x49,0x89,0xc1});
+#else
+                        if (i==0) code.insert(code.end(),{0x48,0x89,0xc7});
+                        else if (i==1) code.insert(code.end(),{0x48,0x89,0xc6});
+                        else if (i==2) code.insert(code.end(),{0x48,0x89,0xc2});
+                        else code.insert(code.end(),{0x48,0x89,0xc1});
+#endif
                     }
                     code.insert(code.end(),{0x48,0x83,0xec,0x20,0x48,0xb8}); u64(code,reinterpret_cast<std::uintptr_t>(external));
                     code.insert(code.end(),{0xff,0xd0,0x48,0x83,0xc4,0x20});
-                    emitStoreValue(code,f,in.result); break;
-#endif
+                    emitStoreValue(code,f,in.result);emitFaultCheck(code);break;
                 }
                 for (auto it=in.arguments.rbegin();it!=in.arguments.rend();++it) {
                     const auto d=disp(f.localCount+*it); code.insert(code.end(),{0xff,0xb5}); u32(code,static_cast<std::uint32_t>(d));
                 }
                 code.push_back(0xe8); calls.push_back({code.size(),in.symbol}); u32(code,0);
                 if (!in.arguments.empty()) { code.insert(code.end(),{0x48,0x81,0xc4}); u32(code,static_cast<std::uint32_t>(in.arguments.size()*8U)); }
-                emitStoreValue(code,f,in.result); break;
+                emitStoreValue(code,f,in.result);emitFaultCheck(code);break;
             default: {
                 emitLoadValue(code,f,in.left); code.insert(code.end(),{0x48,0x89,0xc1});
                 emitLoadValue(code,f,in.right); code.push_back(0x48); code.push_back(0x91); // xchg rax, rcx -> left in rax, right in rcx
@@ -92,8 +117,13 @@ CompiledFunction emitFunction(Bytes& code, const Function& f, std::vector<Pendin
                 case Op::Add: code.insert(code.end(),{0x48,0x01,0xc8}); break;
                 case Op::Subtract: code.insert(code.end(),{0x48,0x29,0xc8}); break;
                 case Op::Multiply: code.insert(code.end(),{0x48,0x0f,0xaf,0xc1}); break;
-                case Op::Divide: code.insert(code.end(),{0x48,0x99,0x48,0xf7,0xf9}); break;
-                case Op::Modulo: code.insert(code.end(),{0x48,0x99,0x48,0xf7,0xf9,0x48,0x89,0xd0}); break;
+                case Op::Divide:case Op::Modulo:
+#if defined(_WIN32)
+                    code.insert(code.end(),{0x48,0x89,0xca,0x48,0x89,0xc1,0x49,0xc7,0xc0});u32(code,in.op==Op::Modulo?1:0);code.insert(code.end(),{0x45,0x31,0xc9});
+#else
+                    code.insert(code.end(),{0x48,0x89,0xc7,0x48,0x89,0xce,0xba});u32(code,in.op==Op::Modulo?1:0);code.insert(code.end(),{0x31,0xc9});
+#endif
+                    code.insert(code.end(),{0x48,0x83,0xec,0x20,0x48,0xb8});u64(code,reinterpret_cast<std::uintptr_t>(&checkedDivide));code.insert(code.end(),{0xff,0xd0,0x48,0x83,0xc4,0x20});break;
                 case Op::BooleanAnd: code.insert(code.end(),{0x48,0x85,0xc0,0x0f,0x95,0xc0,0x48,0x85,0xc9,0x0f,0x95,0xc1,0x20,0xc8,0x0f,0xb6,0xc0}); break;
                 case Op::BooleanOr: code.insert(code.end(),{0x48,0x85,0xc0,0x0f,0x95,0xc0,0x48,0x85,0xc9,0x0f,0x95,0xc1,0x08,0xc8,0x0f,0xb6,0xc0}); break;
                 case Op::Equal: case Op::NotEqual: case Op::Less: case Op::LessEqual: case Op::Greater: case Op::GreaterEqual: {
@@ -103,7 +133,7 @@ CompiledFunction emitFunction(Bytes& code, const Function& f, std::vector<Pendin
                 }
                 default: throw std::runtime_error("Invalid x64 IR instruction.");
                 }
-                emitStoreValue(code,f,in.result); break;
+                emitStoreValue(code,f,in.result);if(in.op==Op::Divide || in.op==Op::Modulo)emitFaultCheck(code);break;
             }
             }
         }
@@ -151,30 +181,67 @@ void freeExecutable(void* p,std::size_t size) {
 
 NativeCode::NativeCode(NativeCode&& other) noexcept { *this=std::move(other); }
 NativeCode& NativeCode::operator=(NativeCode&& other) noexcept {
-    if(this!=&other) { freeExecutable(memory_,memorySize_); memory_=std::exchange(other.memory_,nullptr); memorySize_=std::exchange(other.memorySize_,0); offsets_=std::move(other.offsets_); code_=std::move(other.code_); }
+    if(this!=&other) { freeExecutable(memory_,memorySize_); memory_=std::exchange(other.memory_,nullptr); memorySize_=std::exchange(other.memorySize_,0); offsets_=std::move(other.offsets_); code_=std::move(other.code_);arities_=std::move(other.arities_);returnTypes_=std::move(other.returnTypes_);invoker_=std::move(other.invoker_); }
     return *this;
 }
 NativeCode::~NativeCode(){ freeExecutable(memory_,memorySize_); }
 std::int64_t NativeCode::invoke(const std::string& function,const std::vector<std::int64_t>& args) const {
+    if(invoker_) {
+        std::vector<Value> values;for(auto argument:args)values.emplace_back(argument);
+        const auto result=invoker_(function,values);if(result.type()==Type::Int)return std::get<std::int64_t>(result.data);
+        if(result.type()==Type::Bool)return std::get<bool>(result.data)?1:0;
+        throw std::runtime_error("Use invokeValue for a non-integer native result.");
+    }
+    if(arities_.contains(function) && args.size()!=arities_.at(function))throw std::runtime_error("Native invocation argument count mismatch: "+function);
     if(args.size()>4) throw std::runtime_error("JIT entry invocation supports up to four arguments.");
     const auto found=offsets_.find(function); if(found==offsets_.end()) throw std::runtime_error("Native function not found: "+function);
     auto entry=reinterpret_cast<Entry>(static_cast<std::uint8_t*>(memory_)+found->second);
-    std::int64_t a[4]{}; std::copy(args.begin(),args.end(),a); return entry(a[0],a[1],a[2],a[3]);
+    std::int64_t a[4]{};std::copy(args.begin(),args.end(),a);arithmeticError=0;
+    const auto result=entry(a[0],a[1],a[2],a[3]);
+    if(arithmeticError)throw std::runtime_error(arithmeticError==1?"JM3001: Cannot divide by zero.":"JM3002: Integer division overflow.");
+    return result;
 }
 void NativeFunctionRegistry::registerFunction(std::string stableSymbol, Function function) {
     if (stableSymbol.rfind("builtin.",0)!=0 || !function) throw std::runtime_error("Native function registrations need a non-null builtin.* stable symbol.");
     const auto id=stableBuiltinSymbolId(stableSymbol);
     if (!functions_.emplace(id,function).second) throw std::runtime_error("Native builtin symbol ID is already registered.");
 }
+void NativeFunctionRegistry::registerModule(std::string identity) {
+    if(identity.empty())throw std::runtime_error("A module needs a stable nonempty identity.");modules_.insert(std::move(identity));
+}
+bool NativeFunctionRegistry::hasModule(std::string_view identity) const { return modules_.contains(std::string(identity)); }
 NativeFunctionRegistry::Function NativeFunctionRegistry::find(std::uint64_t stableSymbolId) const {
     const auto found=functions_.find(stableSymbolId); return found==functions_.end()?nullptr:found->second;
 }
 const std::vector<std::uint8_t>& NativeCode::machineCode(const std::string& function) const {
     const auto found=code_.find(function); if(found==code_.end()) throw std::runtime_error("Native function not found: "+function); return found->second;
 }
+Value NativeCode::invokeValue(const std::string& function,const std::vector<Value>& arguments) const {
+    if(invoker_)return invoker_(function,arguments);
+    std::vector<std::int64_t> values;for(const auto& value:arguments) {
+        if(value.type()==Type::Int)values.push_back(std::get<std::int64_t>(value.data));else if(value.type()==Type::Bool)values.push_back(std::get<bool>(value.data)?1:0);else throw std::runtime_error("Bootstrap native invocation requires Int/Bool arguments.");
+    }
+    const auto result=invoke(function,values);
+    if(returnTypes_.contains(function) && returnTypes_.at(function)==Type::Bool)return Value(result!=0);
+    if(returnTypes_.contains(function) && returnTypes_.at(function)==Type::Void)return Value{};
+    return Value(result);
+}
+void NativeFunctionRegistry::registerFunction(Metadata info,Function function) {
+    if(info.parameterTypes.size()!=info.parameterNames.size() || info.parameterTypes.size()>4)throw std::runtime_error("Invalid native registry parameter metadata.");
+    if(info.returnType!=Type::Int && info.returnType!=Type::Bool && info.returnType!=Type::Void)throw std::runtime_error("Fixed registry ABI supports Int/Bool/Void returns.");
+    for(auto type:info.parameterTypes)if(type!=Type::Int && type!=Type::Bool)throw std::runtime_error("Fixed registry ABI supports Int/Bool parameters.");
+    const auto id=stableBuiltinSymbolId(info.symbol);registerFunction(info.symbol,function);metadata_.emplace(id,std::move(info));
+}
+const NativeFunctionRegistry::Metadata* NativeFunctionRegistry::metadata(std::uint64_t id) const {
+    auto found=metadata_.find(id);return found==metadata_.end()?nullptr:&found->second;
+}
 std::string X64Backend::targetTriple() const {
-#if defined(_WIN32) && defined(_M_X64)
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
     return "x86_64-pc-windows-msvc";
+#elif defined(__APPLE__) && defined(__x86_64__)
+    return "x86_64-apple-darwin";
+#elif defined(__linux__) && defined(__x86_64__)
+    return "x86_64-pc-linux-gnu";
 #elif defined(__x86_64__) || defined(_M_X64)
     return "x86_64-unknown-native";
 #else
@@ -182,9 +249,16 @@ std::string X64Backend::targetTriple() const {
 #endif
 }
 NativeCode X64Backend::compile(const Module& module, const NativeFunctionRegistry& registry) const {
-#if !defined(_WIN32) || !defined(_M_X64)
+#if !defined(__x86_64__) && !defined(_M_X64)
     (void)module; throw std::runtime_error("The bootstrap native backend currently targets x86-64 only.");
 #else
+    LoweringDiagnostic diagnostic;if(!verify(module,diagnostic))throw std::runtime_error(diagnostic.message);
+    for(const auto& identity:module.imports)if(!standardModule(identity) && !registry.hasModule(identity))throw std::runtime_error("Missing native module binding: "+identity);
+    if(!module.globals.empty())throw std::runtime_error("Bootstrap x64 capability: Globals require LLVM or Interpreter.");
+    for(const auto& function:module.functions) {
+        if(function.returnType==Type::Float || function.returnType==Type::String || function.returnType==Type::List)throw std::runtime_error("Bootstrap x64 capability: non-integer return requires LLVM or Interpreter.");
+        for(const auto type:function.valueTypes)if(type==Type::Float)throw std::runtime_error("Bootstrap x64 capability: Float requires LLVM or Interpreter.");
+    }
     NativeCode result; Bytes code; std::unordered_map<std::string,CompiledFunction> compiled; std::vector<Pending> calls;
     for(const Function& function:module.functions) {
         if(compiled.contains(function.name)) throw std::runtime_error("Duplicate native function: "+function.name);
@@ -199,13 +273,18 @@ NativeCode X64Backend::compile(const Module& module, const NativeFunctionRegistr
     for(const auto& [name,function]:compiled) {
         trampolines[name]=code.size();
         for(std::uint32_t i=function.parameterCount;i>0;--i) {
+#if defined(_WIN32)
             switch(i-1) { case 0: code.push_back(0x51); break; case 1: code.push_back(0x52); break; case 2: code.insert(code.end(),{0x41,0x50}); break; case 3: code.insert(code.end(),{0x41,0x51}); break; default: throw std::runtime_error("Native entry supports at most four parameters."); }
+#else
+            switch(i-1) { case 0: code.push_back(0x57); break; case 1: code.push_back(0x56); break; case 2: code.push_back(0x52); break; case 3: code.push_back(0x51); break; default: throw std::runtime_error("Native entry supports at most four parameters."); }
+#endif
         }
         code.push_back(0xe8); const std::size_t at=code.size(); u32(code,0); patch32(code,at,static_cast<std::int64_t>(function.start)-static_cast<std::int64_t>(at+4));
         if(function.parameterCount) { code.insert(code.end(),{0x48,0x81,0xc4}); u32(code,function.parameterCount*8U); }
         code.push_back(0xc3);
     }
-    for(const auto& [name,offset]:trampolines) result.offsets_[name]=offset;
+    for(const auto& function:module.functions)result.returnTypes_[function.name]=function.returnType;
+    for(const auto& [name,offset]:trampolines) { result.offsets_[name]=offset;result.arities_[name]=compiled.at(name).parameterCount; }
     result.memorySize_=(code.size()+4095U)&~std::size_t(4095U); result.memory_=allocateExecutable(result.memorySize_);
     if(!result.memory_) throw std::runtime_error("Could not allocate executable memory for x86-64 code.");
     std::memcpy(result.memory_,code.data(),code.size());

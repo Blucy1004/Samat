@@ -83,7 +83,7 @@ void Scene::replaceObjects(std::vector<GameObject> objects) {
     for (const GameObject& object : objects_) {
         if (object.id.rfind("object-", 0) == 0) {
             try {
-                nextId_ = std::max(nextId_, std::stoull(object.id.substr(7)) + 1);
+                nextId_ = std::max<std::uint64_t>(nextId_, std::stoull(object.id.substr(7)) + 1);
             } catch (...) {
                 // Non-numeric stable IDs are valid; they do not affect generated demo IDs.
             }

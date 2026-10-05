@@ -1,0 +1,11 @@
+함수 main() -> Int:
+    목록 변수 values를 [5, 3, 8, 1, 2]로 정한다.
+    0부터 values.length까지 i를 반복하며:
+        0부터 ((values.length - i) - 1)까지 j를 반복하며:
+            (values[j] > values[(j + 1)])라면:
+                숫자 변수 temporary를 values[j]로 정한다.
+                values[j]를 values[(j + 1)]로 정한다.
+                values[(j + 1)]를 temporary로 정한다.
+    실행한다 assert((values == [1, 2, 3, 5, 8]))
+    실행한다 print(values)
+    values[0]를 반환한다.

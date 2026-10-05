@@ -1,5 +1,7 @@
 # JM IR and Native Compilation
 
+For the current optional LLVM ORC JIT, object/AOT commands, verified scalar capabilities, and limitations, see [Samat v0.5](Samat-v0.5.md). The original bootstrap milestone description below is retained as historical context.
+
 ## Current pipeline
 
 ```text
