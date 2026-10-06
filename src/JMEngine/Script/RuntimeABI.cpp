@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -21,6 +22,8 @@ struct Object {
     std::string text;
     std::vector<uint64_t> values;
     uint64_t element{};
+    std::vector<uint64_t> types;
+    std::map<std::string, uint64_t> entries;
 };
 struct Context {
     std::vector<std::unique_ptr<Object>> objects;
@@ -88,6 +91,18 @@ std::string stringify(uint64_t value, uint64_t type) {
             fail("JM6001: Float formatting failed.");
         return {buffer, end};
     }
+    if (type == JM_RT_VECTOR2 || type == JM_RT_VECTOR3 || type == JM_RT_COLOR) {
+        auto &aggregate = object(value, type);
+        std::string result = type == JM_RT_VECTOR2   ? "Vector2("
+                             : type == JM_RT_VECTOR3 ? "Vector3("
+                                                     : "Color(";
+        for (size_t i = 0; i < aggregate.values.size(); ++i) {
+            if (i)
+                result += ", ";
+            result += stringify(aggregate.values[i], JM_RT_FLOAT);
+        }
+        return result + ")";
+    }
     if (type == JM_RT_LIST) {
         auto &valueList = list(value);
         std::string result = "[";
@@ -113,6 +128,11 @@ void element(Object &value, uint64_t type) {
 }
 } // namespace
 extern "C" {
+uint64_t jm_runtime_abi_version() { return JM_RUNTIME_ABI_VERSION; }
+void jm_runtime_require_abi(uint64_t version) {
+    if (version != JM_RUNTIME_ABI_VERSION)
+        fail("JM6003: Runtime ABI version mismatch.");
+}
 void *jm_runtime_create_context() { return new Context; }
 void jm_runtime_destroy_context(void *context) { delete static_cast<Context *>(context); }
 void *jm_runtime_activate(void *context) {
@@ -158,6 +178,18 @@ void jm_runtime_collect() {
         if (!id || id > current->objects.size() || !current->objects[id - 1])
             fail("JM6001: Invalid managed root.");
         auto &value = *current->objects[id - 1];
+        if (value.type == JM_RT_MAP && (value.element == JM_RT_STRING || value.element == JM_RT_LIST))
+            for (auto &[key, child] : value.entries)
+                work.push_back(child);
+        if (value.type == JM_RT_STRUCT || value.type == JM_RT_TUPLE) {
+            for (size_t i = 0; i < value.values.size(); ++i)
+                if (value.types[i] == JM_RT_STRING || value.types[i] == JM_RT_LIST ||
+                    value.types[i] == JM_RT_MAP || value.types[i] == JM_RT_STRUCT ||
+                    value.types[i] == JM_RT_TUPLE || value.types[i] == JM_RT_VECTOR2 ||
+                    value.types[i] == JM_RT_VECTOR3 || value.types[i] == JM_RT_COLOR ||
+                    value.types[i] == JM_RT_RANGE)
+                    work.push_back(value.values[i]);
+        }
         if (value.type == JM_RT_LIST && value.element == JM_RT_STRING)
             for (auto child : value.values)
                 work.push_back(child);
@@ -182,6 +214,182 @@ const char *jm_string_bytes(JMHandle value, uint64_t *length) {
     return result.data();
 }
 uint64_t jm_runtime_call(uint64_t operation, uint64_t a, uint64_t b, uint64_t c) {
+    if (operation >= JM_RT_RANGE_CREATE) {
+        if (operation == JM_RT_RANGE_CREATE) {
+            if (std::bit_cast<int64_t>(c) == 0)
+                fail("JM3005: Range step cannot be zero.");
+            return add({JM_RT_RANGE, {}, {a, b, c}, JM_RT_INT, {}, {}});
+        }
+        auto &range = object(a, JM_RT_RANGE);
+        if (operation == JM_RT_RANGE_FIELD)
+            return range.values[index(b, 3)];
+        auto start = std::bit_cast<int64_t>(range.values[0]), end = std::bit_cast<int64_t>(range.values[1]),
+             step = std::bit_cast<int64_t>(range.values[2]);
+        uint64_t distance = step > 0 ? range.values[1] - range.values[0] : range.values[0] - range.values[1];
+        uint64_t stride = step > 0 ? static_cast<uint64_t>(step) : 0 - static_cast<uint64_t>(step);
+        uint64_t count =
+            (step > 0 ? start >= end : start <= end) ? 0 : distance / stride + (distance % stride != 0);
+        if (count > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+            fail("JM6002: Native Range length exceeds Int capacity.");
+        if (operation == JM_RT_RANGE_LENGTH)
+            return count;
+        if (operation != JM_RT_RANGE_GET)
+            fail("JM6002: Invalid Range operation.");
+        index(b, count);
+        return range.values[0] + b * range.values[2];
+    }
+    if (operation >= JM_RT_MAP_CREATE) {
+        if (operation == JM_RT_MAP_CREATE) {
+            if (a != JM_RT_INT && a != JM_RT_FLOAT && a != JM_RT_BOOL && a != JM_RT_STRING)
+                fail("JM6002: Unsupported Map element type.");
+            return add({JM_RT_MAP, {}, {}, a, {}, {}});
+        }
+        auto &map = object(a, JM_RT_MAP);
+        if (operation == JM_RT_MAP_LENGTH)
+            return map.entries.size();
+        if (operation == JM_RT_MAP_CLEAR) {
+            map.entries.clear();
+            return 0;
+        }
+        if (operation == JM_RT_MAP_KEYS || operation == JM_RT_MAP_VALUES) {
+            Object values{JM_RT_LIST, {}, {}, operation == JM_RT_MAP_KEYS ? JM_RT_STRING : map.element,
+                          {},         {}};
+            for (auto &[key, value] : map.entries)
+                values.values.push_back(operation == JM_RT_MAP_KEYS ? str(key) : value);
+            return add(std::move(values));
+        }
+        auto key = text(b);
+        auto found = map.entries.find(key);
+        if (operation == JM_RT_MAP_CONTAINS)
+            return found != map.entries.end();
+        if (operation == JM_RT_MAP_REMOVE)
+            return map.entries.erase(key) != 0;
+        if (operation == JM_RT_MAP_GET) {
+            if (found == map.entries.end())
+                fail("JM3003: Map key does not exist.");
+            return found->second;
+        }
+        if (operation != JM_RT_MAP_SET)
+            fail("JM6002: Invalid Map operation.");
+        if (map.element == JM_RT_STRING)
+            object(c, JM_RT_STRING);
+        map.entries[key] = c;
+        return 0;
+    }
+    if (operation >= JM_RT_RECORD_CREATE) {
+        if (operation == JM_RT_RECORD_CREATE) {
+            if (a != JM_RT_STRUCT && a != JM_RT_TUPLE)
+                fail("JM6002: Invalid record type.");
+            return add({a, {}, {}, 0, {}});
+        }
+        if (!a || a > current->objects.size() || !current->objects[a - 1])
+            fail("JM6001: Invalid record handle.");
+        auto &record = *current->objects[a - 1];
+        if (record.type != JM_RT_STRUCT && record.type != JM_RT_TUPLE)
+            fail("JM6002: Invalid record receiver.");
+        if (operation == JM_RT_RECORD_APPEND) {
+            if (c == JM_RT_STRUCT || c == JM_RT_TUPLE || c == JM_RT_ANY || c == JM_RT_VOID)
+                fail("JM6002: Unsupported record field type.");
+            record.values.push_back(b);
+            record.types.push_back(c);
+            return 0;
+        }
+        auto slot = index(b & 0xffffffffULL, record.values.size());
+        auto type = b >> 32;
+        if (type != record.types[slot])
+            fail("JM6002: Record field type mismatch.");
+        if (operation == JM_RT_RECORD_GET)
+            return record.values[slot];
+        if (operation != JM_RT_RECORD_SET || record.type != JM_RT_STRUCT)
+            fail("JM6002: Immutable record write.");
+        record.values[slot] = c;
+        return 0;
+    }
+    if (operation >= JM_RT_AGGREGATE_CREATE) {
+        auto aggregate = [&](uint64_t handle) -> Object & {
+            if (!handle || handle > current->objects.size() || !current->objects[handle - 1])
+                fail("JM6001: Invalid aggregate handle.");
+            auto &v = *current->objects[handle - 1];
+            if (v.type != JM_RT_VECTOR2 && v.type != JM_RT_VECTOR3 && v.type != JM_RT_COLOR)
+                fail("JM6002: Invalid aggregate type.");
+            size_t count = v.type == JM_RT_VECTOR2 ? 2 : v.type == JM_RT_VECTOR3 ? 3 : 4;
+            if (v.values.size() != count)
+                fail("JM6002: Incomplete aggregate.");
+            return v;
+        };
+        if (operation == JM_RT_AGGREGATE_CREATE) {
+            if (a != JM_RT_VECTOR2 && a != JM_RT_VECTOR3 && a != JM_RT_COLOR)
+                fail("JM6002: Invalid aggregate creation type.");
+            return add({a, {}, {}, JM_RT_FLOAT});
+        }
+        if (operation == JM_RT_AGGREGATE_APPEND) {
+            auto &v = object(a, c);
+            size_t count = c == JM_RT_VECTOR2 ? 2 : c == JM_RT_VECTOR3 ? 3 : 4;
+            if (v.values.size() >= count)
+                fail("JM6002: Aggregate field overflow.");
+            v.values.push_back(b);
+            return 0;
+        }
+        auto &left = aggregate(a);
+        if (operation == JM_RT_FIELD_GET)
+            return left.values[index(b, left.values.size())];
+        auto x = [&](size_t i) { return std::bit_cast<double>(left.values[i]); };
+        double length = 0;
+        for (size_t i = 0; i < left.values.size(); ++i)
+            length = std::hypot(length, x(i));
+        if (operation == JM_RT_VECTOR_LENGTH)
+            return std::bit_cast<uint64_t>(length);
+        if (operation == JM_RT_VECTOR_SCALE || operation == JM_RT_VECTOR_DIVIDE ||
+            operation == JM_RT_VECTOR_NORMALIZED) {
+            double scale = operation == JM_RT_VECTOR_NORMALIZED ? (length == 0 ? 0 : 1 / length)
+                                                                : std::bit_cast<double>(b);
+            if (operation == JM_RT_VECTOR_DIVIDE) {
+                if (scale == 0)
+                    fail("JM3001: Vector division by zero.");
+                scale = 1 / scale;
+            }
+            Object result = left;
+            for (size_t i = 0; i < result.values.size(); ++i)
+                result.values[i] = std::bit_cast<uint64_t>(x(i) * scale);
+            return add(std::move(result));
+        }
+        auto &right = aggregate(b);
+        if (left.type != right.type)
+            fail("JM6002: Aggregate operands differ.");
+        auto y = [&](size_t i) { return std::bit_cast<double>(right.values[i]); };
+        if (operation == JM_RT_AGGREGATE_EQUAL) {
+            for (size_t i = 0; i < left.values.size(); ++i)
+                if (x(i) != y(i))
+                    return 0;
+            return 1;
+        }
+        if (operation == JM_RT_VECTOR_DOT || operation == JM_RT_VECTOR_DISTANCE) {
+            double value = 0;
+            for (size_t i = 0; i < left.values.size(); ++i)
+                value = operation == JM_RT_VECTOR_DOT ? value + x(i) * y(i) : std::hypot(value, x(i) - y(i));
+            return std::bit_cast<uint64_t>(value);
+        }
+        Object result = left;
+        if (operation == JM_RT_VECTOR_CROSS) {
+            if (left.type != JM_RT_VECTOR3)
+                fail("JM6002: Cross requires Vector3.");
+            for (size_t i = 0; i < 3; ++i)
+                result.values[i] = std::bit_cast<uint64_t>(x((i + 1) % 3) * y((i + 2) % 3) -
+                                                           x((i + 2) % 3) * y((i + 1) % 3));
+        } else
+            for (size_t i = 0; i < result.values.size(); ++i) {
+                double value = operation == JM_RT_VECTOR_ADD        ? x(i) + y(i)
+                               : operation == JM_RT_VECTOR_SUBTRACT ? x(i) - y(i)
+                               : operation == JM_RT_VECTOR_LERP
+                                   ? x(i) + (y(i) - x(i)) * std::bit_cast<double>(c)
+                                   : 0;
+                if (operation != JM_RT_VECTOR_ADD && operation != JM_RT_VECTOR_SUBTRACT &&
+                    operation != JM_RT_VECTOR_LERP)
+                    fail("JM6002: Invalid vector operation.");
+                result.values[i] = std::bit_cast<uint64_t>(value);
+            }
+        return add(std::move(result));
+    }
     if (operation >= JM_RT_TRUNC && operation <= JM_RT_SMOOTHSTEP) {
         auto x = std::bit_cast<double>(a), y = std::bit_cast<double>(b), z = std::bit_cast<double>(c);
         double result{};

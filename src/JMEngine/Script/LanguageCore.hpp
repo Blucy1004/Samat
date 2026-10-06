@@ -111,6 +111,7 @@ struct Value::Tuple {
 struct Value::Map : std::map<std::string, Value> {
     using std::map<std::string, Value>::map;
     bool immutable{false};
+    Type elementType{Type::Any};
 };
 struct StructObject {
     std::string name;

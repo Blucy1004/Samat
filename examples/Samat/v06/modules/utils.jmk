@@ -1,0 +1,2 @@
+함수 scaleVelocity(value: Vector2, delta: Float) -> Vector2:
+    (value * delta)를 반환한다.

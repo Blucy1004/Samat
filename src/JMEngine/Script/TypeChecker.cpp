@@ -10,12 +10,27 @@ std::string typeName(Type type) {
     return names[static_cast<unsigned>(type)];
 }
 std::string annotationName(Type base, Type element) {
-    return typeName(base) + (element == Type::Any ? "" : "<" + typeName(element) + ">");
+    return typeName(base) +
+           (element == Type::Any ? "" : (base == Type::Map ? "<String, " : "<") + typeName(element) + ">");
 }
 TypeAnnotation parseAnnotation(std::string_view name) {
     auto less = name.find('<');
     if (less == std::string_view::npos)
         return {parseType(name), Type::Any};
+    if (name.substr(0, less) == "Map") {
+        auto comma = name.find(',', less);
+        if (!name.ends_with('>') || comma == std::string_view::npos ||
+            name.substr(less + 1, comma - less - 1) != "String")
+            throw std::runtime_error("Map<K,V> currently requires String keys.");
+        auto text = name.substr(comma + 1, name.size() - comma - 2);
+        while (!text.empty() && text.front() == ' ')
+            text.remove_prefix(1);
+        auto element = parseType(text);
+        if (element != Type::Int && element != Type::Float && element != Type::Bool &&
+            element != Type::String)
+            throw std::runtime_error("Map<String,T> currently requires primitive values.");
+        return {Type::Map, element};
+    }
     if (!name.ends_with('>') || name.find(',', less) != std::string_view::npos)
         throw std::runtime_error("Only List<T> annotations are currently supported.");
     auto base = parseType(name.substr(0, less));
@@ -99,6 +114,8 @@ struct Checker {
     struct Binding {
         Type type;
         bool constant;
+        const Statement *structure{};
+        Type element{Type::Any};
     };
     std::vector<std::unordered_map<std::string, Binding>> scopes{1};
     std::unordered_map<std::string, const Statement *> functions, structures;
@@ -148,12 +165,31 @@ struct Checker {
             if ((container == Type::List || container == Type::String) && index != Type::Int &&
                 index != Type::Any)
                 error("JM2005", "List/string index must be Int.", Type::Int, index);
+            if (value->left && value->left->kind == Expression::Kind::Identifier) {
+                auto binding = lookup(value->left->text);
+                if (container == Type::Map && binding.element != Type::Any && index != Type::String &&
+                    index != Type::Any)
+                    error("JM2005", "Typed Map key must be String.", Type::String, index);
+                if (container == Type::List || container == Type::Map)
+                    return binding.element;
+            }
             return container == Type::String ? Type::String : Type::Any;
         }
         case Expression::Kind::Member:
+            if (value->left && value->left->kind == Expression::Kind::Identifier &&
+                lookup(value->left->text).structure != nullptr) {
+                auto schema = lookup(value->left->text).structure;
+                auto field = std::find_if(schema->body.begin(), schema->body.end(),
+                                          [&](const auto &f) { return f.name == value->text; });
+                if (field == schema->body.end()) {
+                    error("JM2005", "Unknown Struct field: " + value->text);
+                    return Type::Any;
+                }
+                return field->declaredType;
+            }
             if (auto type = expr(value->left);
                 type == Type::Vector2 || type == Type::Vector3 || type == Type::Color)
-                return Type::Float;
+                return value->text == "normalized" ? type : Type::Float;
             return value->text == "length" ? Type::Int : Type::Any;
         case Expression::Kind::Unary: {
             auto operand = expr(value->right);
@@ -173,8 +209,11 @@ struct Checker {
                 error("JM2006", "Bitwise operators require Int operands.");
             if (op == "and" || op == "or" || op == "&&" || op == "||" || op == "==" || op == "!=")
                 return Type::Bool;
+            if (op == "*" && numeric(left) && (right == Type::Vector2 || right == Type::Vector3))
+                return right;
             if (left == Type::Vector2 || left == Type::Vector3) {
-                if (((op == "+" || op == "-") && left == right) || ((op == "*" || op == "/") && numeric(right)))
+                if (((op == "+" || op == "-") && left == right) ||
+                    ((op == "*" || op == "/") && numeric(right)))
                     return left;
                 error("JM2006", "Vector arithmetic requires matching vectors or a numeric scale.");
                 return left;
@@ -349,6 +388,12 @@ struct Checker {
                 break;
             }
             case Statement::Kind::Variable: {
+                const Statement *structure = nullptr;
+                if (item.expression && item.expression->kind == Expression::Kind::Call &&
+                    item.expression->left && structures.contains(item.expression->left->text))
+                    structure = structures.at(item.expression->left->text);
+                if (item.expression && item.expression->kind == Expression::Kind::Identifier)
+                    structure = lookup(item.expression->text).structure;
                 auto actual = item.expression ? expr(item.expression) : Type::Any;
                 if (actual == Type::Void && item.declaredType == Type::Any)
                     actual = Type::Any;
@@ -364,8 +409,8 @@ struct Checker {
                     for (const auto &value : item.expression->elements)
                         if (!accepts(item.elementType, expr(value)))
                             error("JM2001", "Typed List element mismatch.", item.elementType, expr(value));
-                declare(item.name,
-                        {item.declaredType == Type::Any ? actual : item.declaredType, item.constant});
+                declare(item.name, {item.declaredType == Type::Any ? actual : item.declaredType,
+                                    item.constant, structure});
                 break;
             }
             case Statement::Kind::Assignment: {

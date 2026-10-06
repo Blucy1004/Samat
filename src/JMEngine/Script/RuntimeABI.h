@@ -3,8 +3,11 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Version 1: opaque handles, fixed-width scalars, UTF-8 bytes; no C++ ABI exposed.
+/* Version 2: opaque handles, fixed-width scalars, UTF-8 bytes; no C++ ABI exposed.
    Handle lifetime is the owning runtime context. Handles must not cross contexts. */
+#define JM_RUNTIME_ABI_VERSION 2u
+uint64_t jm_runtime_abi_version(void);
+void jm_runtime_require_abi(uint64_t version);
 typedef uint64_t JMHandle;
 enum JMRuntimeType {
     JM_RT_ANY = 0,
@@ -13,7 +16,14 @@ enum JMRuntimeType {
     JM_RT_BOOL = 3,
     JM_RT_STRING = 4,
     JM_RT_VOID = 5,
-    JM_RT_LIST = 6
+    JM_RT_LIST = 6,
+    JM_RT_MAP = 7,
+    JM_RT_VECTOR2 = 8,
+    JM_RT_VECTOR3 = 9,
+    JM_RT_COLOR = 10,
+    JM_RT_STRUCT = 12,
+    JM_RT_TUPLE = 13,
+    JM_RT_RANGE = 14
 };
 enum JMRuntimeOperation {
     JM_RT_CONCAT = 1,
@@ -71,7 +81,38 @@ enum JMRuntimeOperation {
     JM_RT_RANDOM_FLOAT,
     JM_RT_TIME_NOW,
     JM_RT_TIME_ELAPSED,
-    JM_RT_LIST_EQUAL
+    JM_RT_LIST_EQUAL,
+    JM_RT_AGGREGATE_CREATE,
+    JM_RT_AGGREGATE_APPEND,
+    JM_RT_FIELD_GET,
+    JM_RT_VECTOR_ADD,
+    JM_RT_VECTOR_SUBTRACT,
+    JM_RT_VECTOR_SCALE,
+    JM_RT_VECTOR_DIVIDE,
+    JM_RT_VECTOR_LENGTH,
+    JM_RT_VECTOR_NORMALIZED,
+    JM_RT_VECTOR_DOT,
+    JM_RT_VECTOR_DISTANCE,
+    JM_RT_VECTOR_CROSS,
+    JM_RT_VECTOR_LERP,
+    JM_RT_AGGREGATE_EQUAL,
+    JM_RT_RECORD_CREATE,
+    JM_RT_RECORD_APPEND,
+    JM_RT_RECORD_GET,
+    JM_RT_RECORD_SET,
+    JM_RT_MAP_CREATE,
+    JM_RT_MAP_GET,
+    JM_RT_MAP_SET,
+    JM_RT_MAP_CONTAINS,
+    JM_RT_MAP_REMOVE,
+    JM_RT_MAP_LENGTH,
+    JM_RT_MAP_CLEAR,
+    JM_RT_MAP_KEYS,
+    JM_RT_MAP_VALUES,
+    JM_RT_RANGE_CREATE,
+    JM_RT_RANGE_LENGTH,
+    JM_RT_RANGE_GET,
+    JM_RT_RANGE_FIELD
 };
 void *jm_runtime_create_context(void);
 void jm_runtime_destroy_context(void *context);

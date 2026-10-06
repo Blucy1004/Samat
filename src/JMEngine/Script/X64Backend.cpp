@@ -600,11 +600,24 @@ void NativeFunctionRegistry::registerTypedFunction(Metadata info, TypedFunction 
         info.parameterTypes.size() > 4)
         throw std::runtime_error("Invalid typed FFI metadata/function.");
     for (auto type : info.parameterTypes)
-        if (type != Type::Int && type != Type::Float && type != Type::Bool && type != Type::String)
+        if (type != Type::Int && type != Type::Float && type != Type::Bool && type != Type::String &&
+            type != Type::Vector2 && type != Type::Vector3 && type != Type::Color && type != Type::List)
             throw std::runtime_error("Typed FFI currently accepts Int/Float/Bool/String.");
     if (info.returnType != Type::Int && info.returnType != Type::Float && info.returnType != Type::Bool &&
-        info.returnType != Type::String && info.returnType != Type::Void)
+        info.returnType != Type::String && info.returnType != Type::Void &&
+        info.returnType != Type::Vector2 && info.returnType != Type::Vector3 &&
+        info.returnType != Type::Color && info.returnType != Type::List)
         throw std::runtime_error("Typed FFI return type is unsupported.");
+    for (size_t i = 0; i < info.parameterTypes.size(); ++i)
+        if (info.parameterTypes[i] == Type::List &&
+            (i >= info.parameterElementTypes.size() ||
+             (info.parameterElementTypes[i] != Type::Int && info.parameterElementTypes[i] != Type::Float &&
+              info.parameterElementTypes[i] != Type::Bool && info.parameterElementTypes[i] != Type::String)))
+            throw std::runtime_error("List FFI parameter needs concrete primitive element metadata.");
+    if (info.returnType == Type::List && info.returnElementType != Type::Int &&
+        info.returnElementType != Type::Float && info.returnElementType != Type::Bool &&
+        info.returnElementType != Type::String)
+        throw std::runtime_error("List FFI return needs concrete primitive element metadata.");
     auto id = stableBuiltinSymbolId(info.symbol);
     if (metadata_.contains(id) || functions_.contains(id) || typed_.contains(id))
         throw std::runtime_error("Duplicate native symbol: " + info.symbol);

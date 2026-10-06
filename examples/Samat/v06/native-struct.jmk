@@ -1,0 +1,13 @@
+자료형 Player:
+    health: Int
+    velocity: Vector2
+    name: String
+    scores: List<Int>
+숫자 변수 state를 Player(health: 100, velocity: Vector2(8.0, 0.0), name: "Player", scores: [1, 2])로 정한다.
+함수 main() -> Int:
+    숫자 변수 stats를 Player(health: 100, velocity: Vector2(3.0, 4.0), name: "JM", scores: [1, 2])로 정한다.
+    숫자 변수 alias를 stats로 정한다.
+    alias.health를 58만큼 줄인다.
+    실행한다 stats.scores.push(3)
+    state.health를 1만큼 늘린다.
+    stats.health를 반환한다.

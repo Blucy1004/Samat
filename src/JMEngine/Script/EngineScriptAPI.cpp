@@ -75,7 +75,7 @@ script::ir::NativeFunctionRegistry engineNativeFunctions() {
     auto add = [&](std::string symbol, std::string korean, std::vector<std::string> names,
                    Registry::Function function, std::string documentation) {
         std::vector<Type> types(names.size(), Type::Int);
-        registry.registerFunction({symbol, symbol.substr(8), korean, documentation, names, types, Type::Int},
+        registry.registerFunction({symbol, symbol.substr(8), korean, documentation, names, types, Type::Int, {}, Type::Any},
                                   function);
     };
     add("builtin.player.move", "플레이어.이동", {"direction", "speed"}, moveThunk,
@@ -92,7 +92,7 @@ script::ir::NativeFunctionRegistry engineNativeFunctions() {
     auto typed = [&](std::string symbol, std::vector<std::string> names, std::vector<Type> types, Type result,
                      Registry::TypedFunction function, std::string documentation) {
         registry.registerTypedFunction(
-            {symbol, symbol.substr(8), symbol, documentation, names, types, result}, std::move(function));
+            {symbol, symbol.substr(8), symbol, documentation, names, types, result, {}, Type::Any}, std::move(function));
     };
     typed(
         "builtin.player.moveFloat", {"direction", "speed"}, {Type::Float, Type::Float}, Type::Bool,
@@ -132,6 +132,79 @@ script::ir::NativeFunctionRegistry engineNativeFunctions() {
             return script::Value(player ? static_cast<double>(player->position.x) : 0.0);
         },
         "Player X coordinate.");
+    auto requirePlayer = []() -> GameObject & {
+        auto *player = active ? active->player() : nullptr;
+        if (!player)
+            throw std::runtime_error("JM7101: Player Entity is unavailable or destroyed.");
+        return *player;
+    };
+    typed(
+        "builtin.player.position", {}, {}, Type::Vector2,
+        [requirePlayer](const auto &) {
+            auto &p = requirePlayer();
+            return script::Value(script::Vector2Value{p.position.x, p.position.y});
+        },
+        "Current Player position; value snapshot.");
+    typed(
+        "builtin.player.setPosition", {"position"}, {Type::Vector2}, Type::Void,
+        [requirePlayer](const auto &args) {
+            auto &p = requirePlayer();
+            auto v = std::get<script::Vector2Value>(args[0].data);
+            auto x = finiteFloat(v.x), y = finiteFloat(v.y);
+            p.position.x = x;
+            p.position.y = y;
+            return script::Value{};
+        },
+        "Assign actual Player position using a Vector2 value.");
+    typed(
+        "builtin.player.velocity", {}, {}, Type::Vector2,
+        [requirePlayer](const auto &) {
+            auto &p = requirePlayer();
+            return script::Value(script::Vector2Value{p.horizontalVelocity, p.verticalVelocity});
+        },
+        "Actual physics velocity; value snapshot.");
+    typed(
+        "builtin.player.setVelocity", {"velocity"}, {Type::Vector2}, Type::Void,
+        [requirePlayer](const auto &args) {
+            auto &p = requirePlayer();
+            auto v = std::get<script::Vector2Value>(args[0].data);
+            auto x = finiteFloat(v.x), y = finiteFloat(v.y);
+            p.horizontalVelocity = x;
+            p.verticalVelocity = y;
+            return script::Value{};
+        },
+        "Set actual Player physics velocity.");
+    typed(
+        "builtin.player.scale", {}, {}, Type::Vector2,
+        [requirePlayer](const auto &) {
+            auto &p = requirePlayer();
+            return script::Value(script::Vector2Value{p.scale.x, p.scale.y});
+        },
+        "Player scale snapshot.");
+    typed(
+        "builtin.player.setScale", {"scale"}, {Type::Vector2}, Type::Void,
+        [requirePlayer](const auto &args) {
+            auto &p = requirePlayer();
+            auto v = std::get<script::Vector2Value>(args[0].data);
+            auto x = finiteFloat(v.x), y = finiteFloat(v.y);
+            p.scale.x = x;
+            p.scale.y = y;
+            return script::Value{};
+        },
+        "Set Player scale.");
+    typed(
+        "builtin.player.rotation", {}, {}, Type::Float,
+        [requirePlayer](const auto &) {
+            return script::Value(static_cast<double>(requirePlayer().rotationDegrees.z));
+        },
+        "Player rotation in degrees.");
+    typed(
+        "builtin.player.setRotation", {"rotation"}, {Type::Float}, Type::Void,
+        [requirePlayer](const auto &args) {
+            requirePlayer().rotationDegrees.z = finiteFloat(std::get<double>(args[0].data));
+            return script::Value{};
+        },
+        "Set actual 2D rotation.");
     auto scalar = [](double value) {
         if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max())
             throw std::runtime_error("Engine scalar is outside finite Float32 range.");

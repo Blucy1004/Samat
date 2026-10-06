@@ -1,0 +1,4 @@
+가져온다 "utils.st"
+함수 main() -> Int:
+    숫자 변수 movement를 scaleVelocity(Vector2(8.0, 0.0), 0.5)로 정한다.
+    (int(movement.x) + 38)를 반환한다.

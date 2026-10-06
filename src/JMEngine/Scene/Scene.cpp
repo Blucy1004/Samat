@@ -74,6 +74,7 @@ void Scene::select(std::string_view id) {
 
 void Scene::replaceObjects(std::vector<GameObject> objects) {
     for (GameObject& object : objects) {
+        object.horizontalVelocity = 0.0F;
         object.verticalVelocity = 0.0F;
         object.grounded = false;
     }
@@ -99,6 +100,7 @@ void Scene::stepPhysics2D(float fixedDeltaSeconds) {
         const float previousBottom = body.position.y - body.scale.y * 0.5F;
         body.grounded = false;
         body.verticalVelocity -= 20.0F * body.gravityScale * fixedDeltaSeconds;
+        body.position.x += body.horizontalVelocity * fixedDeltaSeconds;
         body.position.y += body.verticalVelocity * fixedDeltaSeconds;
         const float currentBottom = body.position.y - body.scale.y * 0.5F;
 

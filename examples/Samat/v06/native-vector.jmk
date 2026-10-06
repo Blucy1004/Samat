@@ -1,0 +1,11 @@
+숫자 변수 velocity를 Vector2(8.0, 0.0)로 정한다.
+숫자 변수 position를 Vector2(0.0, 0.0)로 정한다.
+함수 update(delta: Float):
+    position를 (velocity * delta)만큼 늘린다.
+함수 main() -> Int:
+    0부터 10까지 frame를 반복하며:
+        실행한다 update(0.5)
+    숫자 변수 direction를 Vector2(3.0, 4.0)로 정한다.
+    실행한다 println(direction.length)
+    실행한다 println(position)
+    (int(position.x) + 2)를 반환한다.

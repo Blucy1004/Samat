@@ -11,19 +11,37 @@ int main() {
         int limit;
         bool bootstrap;
     };
-    const std::vector<Case> cases{{"integer accumulation",
-                                   "fn work(limit: Int) -> Int:\n    let total = 0\n    for i in 0..limit:\n "
-                                   "       total += i\n    return total\n",
-                                   "49995000", 10000, true},
-                                  {"Float accumulation",
-                                   "fn work(limit: Int) -> Float:\n    let total: Float = 0.0\n    for i in "
-                                   "0..limit:\n        total += float(i) * 0.5\n    return total\n",
-                                   "24997500", 10000, false},
-                                  {"collection construction and foreach",
-                                   "fn work(limit: Int) -> Int:\n    let values: List<Int> = []\n    for i "
-                                   "in 0..limit:\n        values.push(i)\n    let total = 0\n    for value "
-                                   "in values:\n        total += value\n    return total\n",
-                                   "499500", 1000, false}};
+    const std::vector<Case> cases{
+        {"integer accumulation",
+         "fn work(limit: Int) -> Int:\n    let total = 0\n    for i in 0..limit:\n "
+         "       total += i\n    return total\n",
+         "49995000", 10000, true},
+        {"Float accumulation",
+         "fn work(limit: Int) -> Float:\n    let total: Float = 0.0\n    for i in "
+         "0..limit:\n        total += float(i) * 0.5\n    return total\n",
+         "24997500", 10000, false},
+        {"collection construction and foreach",
+         "fn work(limit: Int) -> Int:\n    let values: List<Int> = []\n    for i "
+         "in 0..limit:\n        values.push(i)\n    let total = 0\n    for value "
+         "in values:\n        total += value\n    return total\n",
+         "499500", 1000, false},
+        {"Vector2 accumulation",
+         "fn work(limit: Int) -> Float:\n    let position = Vector2(0.0, 0.0)\n    let velocity = "
+         "Vector2(1.0, 2.0)\n    for i in 0..limit:\n        position += velocity\n    return position.x + "
+         "position.y\n",
+         "3000", 1000, false},
+        {"Struct field accumulation",
+         "struct Counter:\n    total: Int\nfn work(limit: Int) -> Int:\n    let state = Counter(total: 0)\n  "
+         "  for i in 0..limit:\n        state.total += i\n    return state.total\n",
+         "499500", 1000, false},
+        {"Map lookup",
+         "fn work(limit: Int) -> Int:\n    let scores: Map<String, Int> = {\"JM\": 42}\n    let total = 0\n  "
+         "  for i in 0..limit:\n        total += scores[\"JM\"]\n    return total\n",
+         "42000", 1000, false},
+        {"String concatenation",
+         "fn work(limit: Int) -> Int:\n    let text = \"\"\n    for i in 0..limit:\n        text += \"x\"\n  "
+         "  return text.length\n",
+         "1000", 1000, false}};
 #ifdef NDEBUG
     std::cout << "Release benchmark; ";
 #else

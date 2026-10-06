@@ -1,0 +1,7 @@
+함수 main() -> Int:
+    Map<String, Int> 변수 scores를 선언한다.
+    scores["JM"]를 42로 정한다.
+    scores["Engine"]를 100로 정한다.
+    실행한다 println(scores.keys())
+    실행한다 scores.remove("Engine")
+    scores["JM"]를 반환한다.

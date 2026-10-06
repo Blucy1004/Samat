@@ -137,6 +137,15 @@ std::vector<Token> lex(const std::string &source) {
                 }
                 if ((ch >= '0' && ch <= '9') || (ch == '.' && position + 1 < line.size() &&
                                                  line[position + 1] >= '0' && line[position + 1] <= '9')) {
+                    if (!tokens.empty() && tokens.back().kind == Token::Kind::Dot) {
+                        while (position < line.size() &&
+                               std::isdigit(static_cast<unsigned char>(line[position])))
+                            ++position;
+                        auto text = line.substr(start, position - start);
+                        tokens.push_back(
+                            {Token::Kind::Number, text, std::strtod(text.c_str(), nullptr), lineNumber});
+                        continue;
+                    }
                     const std::size_t range = line.find("..", position);
                     if (range != std::string::npos && range > position &&
                         line.substr(position, range - position).find_first_of(" \t+-*/%()[],") ==
@@ -706,6 +715,19 @@ void typeList(Value &value, Type type) {
         (**list)[i] = std::move(items[i]);
     (*list)->elementType = type;
 }
+void typeMap(Value &value, Type type) {
+    if (type == Type::Any)
+        return;
+    auto map = std::get<Value::MapPtr>(value.data);
+    if (map->elementType != Type::Any && map->elementType != type)
+        throw std::runtime_error("JM2001: Conflicting Map value metadata.");
+    auto items = *map;
+    for (auto &[key, item] : items)
+        item = coerceElement(item, type);
+    for (auto &[key, item] : items)
+        map->at(key) = std::move(item);
+    map->elementType = type;
+}
 void rejectCycle(const Value &candidate, const void *target) {
     std::unordered_set<const void *> visited;
     std::function<bool(const Value &)> contains = [&](const Value &value) {
@@ -971,6 +993,14 @@ Value evaluate(const ExpressionPtr &expression, const Environment &environment, 
             return Value(equal(left, right));
         if (op == "!=")
             return Value(!equal(left, right));
+        if (op == "*" && (right.type() == Type::Vector2 || right.type() == Type::Vector3) &&
+            (left.type() == Type::Int || left.type() == Type::Float)) {
+            auto scale = number(left);
+            if (auto v = std::get_if<Vector2Value>(&right.data))
+                return Value(Vector2Value{scale * v->x, scale * v->y});
+            auto v = std::get<Vector3Value>(right.data);
+            return Value(Vector3Value{scale * v.x, scale * v.y, scale * v.z});
+        }
         if (auto a = std::get_if<Vector2Value>(&left.data)) {
             if (auto b = std::get_if<Vector2Value>(&right.data)) {
                 if (op == "+")
@@ -1116,8 +1146,13 @@ Value evaluate(const ExpressionPtr &expression, const Environment &environment, 
         }
         if (auto map = std::get_if<Value::MapPtr>(&object.data)) {
             const auto found = (*map)->find(index.toString());
-            if (found == (*map)->end())
+            if ((*map)->elementType != Type::Any && index.type() != Type::String)
+                throw std::runtime_error("JM2005: Typed Map key must be String.");
+            if (found == (*map)->end()) {
+                if ((*map)->elementType != Type::Any)
+                    throw std::runtime_error("JM3003: Map key does not exist.");
                 return Value{};
+            }
             return found->second;
         }
         if (auto text = std::get_if<std::string>(&object.data)) {
@@ -1185,6 +1220,27 @@ Value evaluate(const ExpressionPtr &expression, const Environment &environment, 
             if (found == (*structure)->fields->end())
                 throw std::runtime_error("Unknown struct field.");
             return found->second;
+        }
+        if (auto vector = std::get_if<Vector2Value>(&object.data)) {
+            auto length = std::hypot(vector->x, vector->y);
+            if (expression->text == "length")
+                return Value(length);
+            if (expression->text == "lengthSquared")
+                return Value(vector->x * vector->x + vector->y * vector->y);
+            if (expression->text == "normalized")
+                return Value(length == 0 ? Vector2Value{}
+                                         : Vector2Value{vector->x / length, vector->y / length});
+        }
+        if (auto vector = std::get_if<Vector3Value>(&object.data)) {
+            auto length = std::hypot(vector->x, vector->y, vector->z);
+            if (expression->text == "length")
+                return Value(length);
+            if (expression->text == "lengthSquared")
+                return Value(vector->x * vector->x + vector->y * vector->y + vector->z * vector->z);
+            if (expression->text == "normalized")
+                return Value(length == 0
+                                 ? Vector3Value{}
+                                 : Vector3Value{vector->x / length, vector->y / length, vector->z / length});
         }
         if (auto vector = std::get_if<Vector2Value>(&object.data)) {
             if (expression->text == "x")
@@ -1580,7 +1636,9 @@ class CodeParser {
         auto text = expect(Token::Kind::Identifier, "Expected a type name.").text;
         if (take(Token::Kind::Less)) {
             text += "<" + expect(Token::Kind::Identifier, "Expected a List element type.").text;
-            expect(Token::Kind::Greater, "Expected '>' after List element type.");
+            if (take(Token::Kind::Comma))
+                text += "," + expect(Token::Kind::Identifier, "Expected Map value type.").text;
+            expect(Token::Kind::Greater, "Expected '>' after collection element types.");
             text += ">";
         }
         return parseAnnotation(text);
@@ -1906,17 +1964,33 @@ class KoreanAstParser {
                 result.push_back(std::move(statement));
                 continue;
             }
-            static const std::regex function(R"(^함수\s+([^\s(]+)\s*\(([^)]*)\)\s*(?:->\s*([^\s:]+))?\s*:$)");
+            static const std::regex function(R"(^함수\s+([^\s(]+)\s*\(([^)]*)\)\s*(?:->\s*([^:]+?))?\s*:$)");
             static const std::regex variable(
-                R"(^(List<[^>]+>|숫자|정수|실수|문자열|논리|목록|지도|자동|Vector2|Vector3|Color|Tuple|Range)\s+(변수|상수)\s+(.+?)\s*(?:을|를)\s+(.+?)\s*(?:으로|로)\s*정한다\.?$)");
+                R"(^(List<[^>]+>|Map<[^>]+>|숫자|정수|실수|문자열|논리|목록|지도|자동|Vector2|Vector3|Color|Tuple|Range)\s+(변수|상수)\s+(.+?)\s*(?:을|를)\s+(.+?)\s*(?:으로|로)\s*정한다\.?$)");
             if (std::regex_match(text, match, function)) {
                 statement.kind = Statement::Kind::Function;
                 statement.name = match[1].str();
                 std::string params = trimLanguageText(match[2].str());
                 if (!params.empty()) {
-                    std::istringstream stream(params);
-                    std::string item;
-                    while (std::getline(stream, item, ',')) {
+                    std::vector<std::string> parameters;
+                    size_t start = 0;
+                    int depth = 0;
+                    for (size_t i = 0; i < params.size(); ++i) {
+                        if (params[i] == '<')
+                            ++depth;
+                        else if (params[i] == '>')
+                            --depth;
+                        else if (params[i] == ',' && depth == 0) {
+                            parameters.push_back(params.substr(start, i - start));
+                            start = i + 1;
+                        }
+                        if (depth < 0)
+                            fail("함수 타입 괄호를 확인해 주세요.");
+                    }
+                    if (depth != 0)
+                        fail("함수 타입 괄호를 확인해 주세요.");
+                    parameters.push_back(params.substr(start));
+                    for (auto item : parameters) {
                         item = trimLanguageText(item);
                         if (item.empty())
                             fail("함수 매개변수 구문을 확인해 주세요.");
@@ -1930,7 +2004,7 @@ class KoreanAstParser {
                     }
                 }
                 if (match[3].matched) {
-                    auto type = parseAnnotation(match[3].str());
+                    auto type = parseAnnotation(trimLanguageText(match[3].str()));
                     statement.returnType = type.base;
                     statement.returnElementType = type.element;
                 }
@@ -1939,7 +2013,7 @@ class KoreanAstParser {
                 continue;
             }
             static const std::regex declaration(
-                R"(^(List<[^>]+>|숫자|정수|실수|문자열|논리|목록|지도|Vector2|Vector3|Color|Tuple|Range) 변수 (.+?)(?:을|를) 선언한다\.$)");
+                R"(^(List<[^>]+>|Map<[^>]+>|숫자|정수|실수|문자열|논리|목록|지도|Vector2|Vector3|Color|Tuple|Range) 변수 (.+?)(?:을|를) 선언한다\.$)");
             if (std::regex_match(text, match, declaration)) {
                 statement.kind = Statement::Kind::Variable;
                 statement.name = match[2].str();
@@ -2167,7 +2241,12 @@ class Interpreter {
         output_.clear();
         executed_ = 0;
         for (const auto &item : parsed.statements)
-            if (item.kind == Statement::Kind::Function) {
+            if (item.kind == Statement::Kind::Struct) {
+                if (structures_.contains(item.name))
+                    throw std::runtime_error("Duplicate REPL Struct: " + item.name);
+                fragments_.push_back(item);
+                structures_[item.name] = &fragments_.back();
+            } else if (item.kind == Statement::Kind::Function) {
                 if (functions_.contains(item.name))
                     throw std::runtime_error("Duplicate REPL function: " + item.name);
                 fragments_.push_back(item);
@@ -2291,6 +2370,8 @@ class Interpreter {
             auto value = coerceElement(args[i], spec.declaredType);
             if (spec.declaredType == Type::List)
                 typeList(value, spec.elementType);
+            if (spec.declaredType == Type::Map)
+                typeMap(value, spec.elementType);
             result->fields->emplace(spec.name, std::move(value));
         }
         for (size_t i = 0; i < declaration.body.size(); ++i)
@@ -2301,6 +2382,8 @@ class Interpreter {
                 auto value = coerceElement(eval(spec.expression, globals_), spec.declaredType);
                 if (spec.declaredType == Type::List)
                     typeList(value, spec.elementType);
+                if (spec.declaredType == Type::Map)
+                    typeMap(value, spec.elementType);
                 result->fields->emplace(spec.name, std::move(value));
             }
         return Value(result);
@@ -2326,6 +2409,8 @@ class Interpreter {
                 throw std::runtime_error("Struct assignment requires the same named type.");
             if (current.type() == Type::List)
                 typeList(value, std::get<Value::ArrayPtr>(current.data)->elementType);
+            if (current.type() == Type::Map)
+                typeMap(value, std::get<Value::MapPtr>(current.data)->elementType);
             env->assign(target->text, std::move(value));
             return;
         }
@@ -2347,7 +2432,10 @@ class Interpreter {
                 if ((*map)->immutable)
                     throw std::runtime_error("Enum namespace is immutable.");
                 rejectCycle(value, map->get());
-                map->get()->insert_or_assign(index.toString(), std::move(value));
+                if ((*map)->elementType != Type::Any && index.type() != Type::String)
+                    throw std::runtime_error("JM2005: Typed Map key must be String.");
+                map->get()->insert_or_assign(index.toString(),
+                                             coerceElement(std::move(value), (*map)->elementType));
                 return;
             }
             throw std::runtime_error("Only a list or map item can be assigned.");
@@ -2435,6 +2523,8 @@ class Interpreter {
                                          typeName(statement.declaredType) + ", got " + value.typeName());
             if (statement.declaredType == Type::List)
                 typeList(value, statement.elementType);
+            if (statement.declaredType == Type::Map)
+                typeMap(value, statement.elementType);
             env->declare(statement.name, std::move(value), statement.constant);
             return {};
         }
@@ -2456,6 +2546,18 @@ class Interpreter {
                 compound.right->kind = Expression::Kind::Literal;
                 compound.right->literal = value;
                 value = evaluateExpression(std::make_shared<Expression>(compound), *env);
+            }
+            if (host_ && statement.target && statement.target->kind == Expression::Kind::Member &&
+                statement.target->left && statement.target->left->kind == Expression::Kind::Identifier &&
+                !env->contains(statement.target->left->text)) {
+                auto property = statement.target->text;
+                if (property == "position" || property == "velocity" || property == "scale" ||
+                    property == "rotation") {
+                    auto setter = property;
+                    setter[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(setter[0])));
+                    host_("builtin." + statement.target->left->text + ".set" + setter, {value}, {});
+                    return {};
+                }
             }
             assignTarget(statement.target, std::move(value), env);
             return {};
@@ -2594,6 +2696,10 @@ class Interpreter {
                 typeList(argument, i < function.parameterElementTypes.size()
                                        ? function.parameterElementTypes[i]
                                        : Type::Any);
+            if (type == Type::Map)
+                typeMap(argument, i < function.parameterElementTypes.size()
+                                      ? function.parameterElementTypes[i]
+                                      : Type::Any);
             local->declare(function.parameters[i], argument);
         }
         Flow flow = runBlock(function.body, local, false);
@@ -2604,6 +2710,8 @@ class Interpreter {
                 throw std::runtime_error("JM2002: Return type mismatch in '" + function.name + "'.");
             if (function.returnType == Type::List)
                 typeList(flow.value, function.returnElementType);
+            if (function.returnType == Type::Map)
+                typeMap(flow.value, function.returnElementType);
             return flow.value;
         }
         if (flow.kind != Flow::Kind::Normal)

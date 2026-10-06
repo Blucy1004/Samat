@@ -1,6 +1,6 @@
 # Samat / 訓C正音 v0.5+ implementation report
 
-This is the current capability report. The preceding v0.5 changes were reviewed, tested and committed as `b302b09`, then pushed normally to `main` before this implementation. No force push was used. This update is a substantial prioritized subset of the requested roadmap; unsupported features below are not advertised as implemented.
+This is the historical v0.5+ checkpoint report. See [v0.6](Samat-v0.6.md) for current capabilities. The preceding v0.5 changes were reviewed, tested and committed as `b302b09`, then pushed normally to `main` before this implementation. No force push was used. This update is a substantial prioritized subset of the requested roadmap; unsupported features below are not advertised as implemented.
 
 ## 1. Baseline
 

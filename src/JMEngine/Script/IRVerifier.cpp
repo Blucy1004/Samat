@@ -190,7 +190,7 @@ bool verify(const Module &module, LoweringDiagnostic &diagnostic) {
                     if (in.op == Op::StringConstant)
                         require(in.type == Type::String, "Invalid string constant type.");
                     if (in.op == Op::RuntimeCall) {
-                        require(in.immediate >= JM_RT_CONCAT && in.immediate <= JM_RT_LIST_EQUAL,
+                        require(in.immediate >= JM_RT_CONCAT && in.immediate <= JM_RT_RANGE_FIELD,
                                 "Invalid runtime operation.");
                         auto op = in.immediate;
                         size_t count = 1;
@@ -211,10 +211,65 @@ bool verify(const Module &module, LoweringDiagnostic &diagnostic) {
                                 : op == JM_RT_LERP || op == JM_RT_SMOOTHSTEP                             ? 3
                                 : op == JM_RT_RANDOM || op == JM_RT_TIME_NOW || op == JM_RT_TIME_ELAPSED ? 0
                                                                                                          : 1;
+                        if (op >= JM_RT_RANGE_CREATE)
+                            count = op == JM_RT_RANGE_CREATE ? 3 : op == JM_RT_RANGE_LENGTH ? 1 : 2;
+                        else if (op >= JM_RT_MAP_CREATE)
+                            count =
+                                op == JM_RT_MAP_SET ? 3
+                                : op == JM_RT_MAP_GET || op == JM_RT_MAP_CONTAINS || op == JM_RT_MAP_REMOVE
+                                    ? 2
+                                    : 1;
+                        else if (op >= JM_RT_RECORD_CREATE)
+                            count = op == JM_RT_RECORD_CREATE ? 1 : op == JM_RT_RECORD_GET ? 2 : 3;
+                        else if (op >= JM_RT_AGGREGATE_CREATE)
+                            count = op == JM_RT_AGGREGATE_CREATE || op == JM_RT_VECTOR_LENGTH ||
+                                            op == JM_RT_VECTOR_NORMALIZED
+                                        ? 1
+                                    : op == JM_RT_AGGREGATE_APPEND || op == JM_RT_VECTOR_LERP ? 3
+                                                                                              : 2;
                         if (op == JM_RT_LIST_EQUAL)
                             count = 2;
                         require(in.arguments.size() == count, "Runtime ABI argument count mismatch.");
                         auto arg = [&](size_t index) { return fn.valueTypes[in.arguments.at(index)]; };
+                        auto constant = [&](size_t index) -> int64_t {
+                            auto id = in.arguments.at(index);
+                            auto [block, position] = definitions.at(id);
+                            auto &value = fn.blocks.at(block).instructions.at(position);
+                            require(value.op == Op::Constant && value.type == Type::Int,
+                                    "Runtime layout descriptor must be a constant Int.");
+                            return value.immediate;
+                        };
+                        if (op == JM_RT_AGGREGATE_CREATE || op == JM_RT_RECORD_CREATE)
+                            require(constant(0) == static_cast<int64_t>(in.type),
+                                    "Aggregate construction type descriptor mismatch.");
+                        if (op == JM_RT_AGGREGATE_APPEND)
+                            require(constant(2) == static_cast<int64_t>(arg(0)),
+                                    "Vector construction type descriptor mismatch.");
+                        if (op == JM_RT_RECORD_APPEND)
+                            require(constant(2) == static_cast<int64_t>(arg(1)),
+                                    "Record field type descriptor mismatch.");
+                        if (op == JM_RT_RECORD_GET || op == JM_RT_RECORD_SET)
+                            require((static_cast<uint64_t>(constant(1)) >> 32) ==
+                                        static_cast<uint64_t>(op == JM_RT_RECORD_GET ? in.type : arg(2)),
+                                    "Record field payload type mismatch.");
+                        if (op == JM_RT_MAP_CREATE)
+                            require(fn.valueElementTypes.contains(in.result) &&
+                                        constant(0) ==
+                                            static_cast<int64_t>(fn.valueElementTypes.at(in.result)),
+                                    "Map creation value metadata mismatch.");
+                        if (op >= JM_RT_MAP_GET && op <= JM_RT_MAP_VALUES) {
+                            require(fn.valueElementTypes.contains(in.arguments.at(0)),
+                                    "Map value metadata missing.");
+                            auto element = fn.valueElementTypes.at(in.arguments.at(0));
+                            require(element == Type::Int || element == Type::Float || element == Type::Bool ||
+                                        element == Type::String,
+                                    "Invalid Map value metadata.");
+                            if (op == JM_RT_MAP_GET)
+                                require(in.type == element, "Map lookup result type mismatch.");
+                            if (op == JM_RT_MAP_SET)
+                                require(arg(2) == element, "Map write value type mismatch.");
+                        }
+
                         if ((op >= JM_RT_CONCAT && op <= JM_RT_LOWER) || op == JM_RT_CODEPOINT_LENGTH ||
                             op == JM_RT_PARSE_INT || op == JM_RT_PARSE_FLOAT)
                             require(arg(0) == Type::String || (op == JM_RT_LENGTH && arg(0) == Type::List),
@@ -241,6 +296,93 @@ bool verify(const Module &module, LoweringDiagnostic &diagnostic) {
                                                 : op == JM_RT_RANDOM_INT ? Type::Int
                                                                          : Type::Float),
                                     "Runtime numeric result mismatch.");
+                        }
+                        if (op >= JM_RT_RANGE_CREATE) {
+                            if (op == JM_RT_RANGE_CREATE)
+                                require(arg(0) == Type::Int && arg(1) == Type::Int && arg(2) == Type::Int &&
+                                            in.type == Type::Range,
+                                        "Invalid Range construction.");
+                            else {
+                                require(arg(0) == Type::Range && in.type == Type::Int,
+                                        "Invalid Range receiver/result.");
+                                if (count == 2)
+                                    require(arg(1) == Type::Int, "Invalid Range index.");
+                            }
+                        } else if (op >= JM_RT_MAP_CREATE) {
+                            if (op == JM_RT_MAP_CREATE)
+                                require(arg(0) == Type::Int && in.type == Type::Map, "Invalid Map creation.");
+                            else {
+                                require(arg(0) == Type::Map, "Invalid Map receiver.");
+                                if (op == JM_RT_MAP_GET || op == JM_RT_MAP_SET || op == JM_RT_MAP_CONTAINS ||
+                                    op == JM_RT_MAP_REMOVE)
+                                    require(arg(1) == Type::String, "Map key must be String.");
+                                if (op == JM_RT_MAP_SET || op == JM_RT_MAP_CLEAR)
+                                    require(in.type == Type::Void, "Invalid Map mutation result.");
+                                if (op == JM_RT_MAP_CONTAINS || op == JM_RT_MAP_REMOVE)
+                                    require(in.type == Type::Bool, "Invalid Map Bool result.");
+                                if (op == JM_RT_MAP_LENGTH)
+                                    require(in.type == Type::Int, "Invalid Map length result.");
+                                if (op == JM_RT_MAP_KEYS || op == JM_RT_MAP_VALUES)
+                                    require(in.type == Type::List, "Invalid Map collection result.");
+                            }
+                        } else if (op >= JM_RT_RECORD_CREATE) {
+                            if (op == JM_RT_RECORD_CREATE)
+                                require(arg(0) == Type::Int &&
+                                            (in.type == Type::Struct || in.type == Type::Tuple),
+                                        "Invalid record creation.");
+                            else {
+                                require(arg(0) == Type::Struct || arg(0) == Type::Tuple,
+                                        "Invalid record receiver.");
+                                if (op == JM_RT_RECORD_APPEND)
+                                    require(arg(2) == Type::Int && in.type == Type::Void,
+                                            "Invalid record append.");
+                                else {
+                                    require(arg(1) == Type::Int, "Invalid record field index.");
+                                    if (op == JM_RT_RECORD_SET)
+                                        require(arg(0) == Type::Struct && in.type == Type::Void,
+                                                "Immutable record write.");
+                                }
+                            }
+                        } else if (op >= JM_RT_AGGREGATE_CREATE) {
+                            auto aggregate = [](Type t) {
+                                return t == Type::Vector2 || t == Type::Vector3 || t == Type::Color;
+                            };
+                            if (op == JM_RT_AGGREGATE_CREATE)
+                                require(arg(0) == Type::Int && aggregate(in.type),
+                                        "Invalid aggregate creation.");
+                            else {
+                                require(aggregate(arg(0)), "Invalid aggregate receiver.");
+                                if (op == JM_RT_AGGREGATE_APPEND)
+                                    require(arg(1) == Type::Float && arg(2) == Type::Int &&
+                                                in.type == Type::Void,
+                                            "Invalid aggregate append.");
+                                else if (op == JM_RT_FIELD_GET)
+                                    require(arg(1) == Type::Int && in.type == Type::Float,
+                                            "Invalid aggregate field.");
+                                else if (op == JM_RT_VECTOR_LENGTH)
+                                    require(in.type == Type::Float && arg(0) != Type::Color,
+                                            "Invalid vector length.");
+                                else if (op == JM_RT_VECTOR_NORMALIZED)
+                                    require(in.type == arg(0) && arg(0) != Type::Color,
+                                            "Invalid normalization.");
+                                else if (op == JM_RT_VECTOR_SCALE || op == JM_RT_VECTOR_DIVIDE)
+                                    require(arg(1) == Type::Float && in.type == arg(0) &&
+                                                arg(0) != Type::Color,
+                                            "Invalid vector scale.");
+                                else {
+                                    require(arg(0) == arg(1), "Aggregate operands mismatch.");
+                                    require(in.type ==
+                                                (op == JM_RT_AGGREGATE_EQUAL ? Type::Bool
+                                                 : op == JM_RT_VECTOR_DOT || op == JM_RT_VECTOR_DISTANCE
+                                                     ? Type::Float
+                                                     : arg(0)),
+                                            "Aggregate result mismatch.");
+                                    if (op == JM_RT_VECTOR_CROSS)
+                                        require(arg(0) == Type::Vector3, "Cross requires Vector3.");
+                                    if (op == JM_RT_VECTOR_LERP)
+                                        require(arg(2) == Type::Float, "Lerp factor must be Float.");
+                                }
+                            }
                         }
                         if (op == JM_RT_LIST_EQUAL)
                             require(arg(0) == Type::List && arg(1) == Type::List && in.type == Type::Bool,

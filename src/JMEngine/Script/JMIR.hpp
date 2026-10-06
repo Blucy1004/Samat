@@ -88,6 +88,7 @@ struct Function {
     Type returnType{Type::Int};
     std::vector<Type> parameterTypes, localTypes, valueTypes, parameterElementTypes;
     Type returnElementType{Type::Any};
+    std::unordered_map<ValueId, Type> valueElementTypes;
 };
 
 struct Global {
@@ -156,6 +157,8 @@ class NativeFunctionRegistry {
         std::vector<std::string> parameterNames;
         std::vector<Type> parameterTypes;
         Type returnType{Type::Int};
+        std::vector<Type> parameterElementTypes;
+        Type returnElementType{Type::Any};
     };
     using TypedFunction = std::function<Value(const std::vector<Value> &)>;
     struct TypedBinding {

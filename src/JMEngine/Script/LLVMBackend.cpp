@@ -53,7 +53,9 @@ llvm::Type *scalar(llvm::LLVMContext &context, Type type) {
         return llvm::Type::getDoubleTy(context);
     if (type == Type::Void)
         return llvm::Type::getVoidTy(context);
-    if (type != Type::String && type != Type::List && type != Type::Int && type != Type::Bool)
+    if (type != Type::String && type != Type::List && type != Type::Int && type != Type::Bool &&
+        type != Type::Vector2 && type != Type::Vector3 && type != Type::Color && type != Type::Struct &&
+        type != Type::Tuple && type != Type::Map && type != Type::Range)
         throw std::runtime_error("LLVM scalar capability excludes " + typeName(type) + ". Use Interpreter.");
     return llvm::Type::getInt64Ty(context);
 }
@@ -71,7 +73,45 @@ std::unique_ptr<llvm::TargetMachine> machine(const std::string &triple) {
 }
 std::string functionName(const std::string &name) { return "__jm_fn_" + name; }
 std::string wrapperName(const std::string &name) { return "__jm_invoke_" + name; }
+std::uint64_t encodeAggregate(const Value &value) {
+    auto type = value.type();
+    auto result = jm_runtime_call(JM_RT_AGGREGATE_CREATE, static_cast<int>(type), 0, 0);
+    std::vector<double> fields;
+    if (type == Type::Vector2) {
+        auto v = std::get<Vector2Value>(value.data);
+        fields = {v.x, v.y};
+    } else if (type == Type::Vector3) {
+        auto v = std::get<Vector3Value>(value.data);
+        fields = {v.x, v.y, v.z};
+    } else {
+        auto v = std::get<ColorValue>(value.data);
+        fields = {v.r, v.g, v.b, v.a};
+    }
+    for (auto v : fields)
+        jm_runtime_call(JM_RT_AGGREGATE_APPEND, result, std::bit_cast<uint64_t>(v), static_cast<int>(type));
+    return result;
+}
 Value decodeFFI(std::uint64_t bits, Type type) {
+    if (type == Type::List) {
+        Value::Array result;
+        auto element = static_cast<Type>(jm_list_element_type(bits));
+        result.elementType = element;
+        auto count = jm_runtime_call(JM_RT_LENGTH, bits, 0, JM_RT_LIST);
+        for (uint64_t i = 0; i < count; ++i)
+            result.push_back(
+                decodeFFI(jm_runtime_call(JM_RT_LIST_GET, bits, i, static_cast<int>(element)), element));
+        return Value::array(std::move(result));
+    }
+    if (type == Type::Vector2 || type == Type::Vector3 || type == Type::Color) {
+        auto field = [&](uint64_t i) {
+            return std::bit_cast<double>(jm_runtime_call(JM_RT_FIELD_GET, bits, i, 0));
+        };
+        if (type == Type::Vector2)
+            return Value(Vector2Value{field(0), field(1)});
+        if (type == Type::Vector3)
+            return Value(Vector3Value{field(0), field(1), field(2)});
+        return Value(ColorValue{field(0), field(1), field(2), field(3)});
+    }
     if (type == Type::Float)
         return Value(std::bit_cast<double>(bits));
     if (type == Type::Bool)
@@ -98,6 +138,28 @@ std::uint64_t typedDispatch(std::uint64_t cookie, std::uint64_t a, std::uint64_t
         value = Value(static_cast<double>(std::get<std::int64_t>(value.data)));
     if (value.type() != type)
         throw std::runtime_error("JM7001: Typed FFI returned a value that does not match metadata.");
+    if (type == Type::List) {
+        auto element = binding.metadata.returnElementType;
+        auto list = jm_runtime_call(JM_RT_LIST_CREATE, static_cast<int>(element), 0, 0);
+        for (auto item : *std::get<Value::ArrayPtr>(value.data)) {
+            if (element == Type::Float && item.type() == Type::Int)
+                item = Value(static_cast<double>(std::get<int64_t>(item.data)));
+            if (item.type() != element)
+                throw std::runtime_error("JM7001: List FFI return element mismatch.");
+            uint64_t bits = element == Type::Int     ? static_cast<uint64_t>(std::get<int64_t>(item.data))
+                            : element == Type::Float ? std::bit_cast<uint64_t>(std::get<double>(item.data))
+                            : element == Type::Bool  ? std::get<bool>(item.data)
+                                                     : 0;
+            if (element == Type::String) {
+                auto &text = std::get<std::string>(item.data);
+                bits = jm_string_create(text.data(), text.size());
+            }
+            jm_runtime_call(JM_RT_LIST_PUSH, list, bits, static_cast<int>(element));
+        }
+        return list;
+    }
+    if (type == Type::Vector2 || type == Type::Vector3 || type == Type::Color)
+        return encodeAggregate(value);
     if (type == Type::Float)
         return std::bit_cast<std::uint64_t>(std::get<double>(value.data));
     if (type == Type::Int)
@@ -260,7 +322,9 @@ std::unique_ptr<llvm::Module> translate(const Module &input, llvm::LLVMContext &
                     break;
                 case Op::GlobalStore:
                     b.CreateStore(load(in.left), globals.at(in.symbol));
-                    if (in.type == Type::String || in.type == Type::List) {
+                    if (in.type == Type::String || in.type == Type::List || in.type == Type::Vector2 ||
+                        in.type == Type::Vector3 || in.type == Type::Color || in.type == Type::Struct ||
+                        in.type == Type::Tuple) {
                         auto callee = result->getOrInsertFunction(
                             "jm_runtime_root", llvm::FunctionType::get(b.getVoidTy(), {i64, i64}, false));
                         b.CreateCall(callee, {b.getInt64(globalRoots.at(in.symbol)), load(in.left)});
@@ -529,7 +593,10 @@ std::unique_ptr<llvm::Module> translate(const Module &input, llvm::LLVMContext &
                                                llvm::GlobalValue::ExternalLinkage,
                                                windows ? "jm_entry" : "main", *result);
         b.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", wrapper));
-        if (aot && result->getFunction("jm_runtime_call")) {
+        if (aot && (result->getFunction("jm_runtime_call") || result->getFunction("jm_string_create"))) {
+            auto abi = result->getOrInsertFunction("jm_runtime_require_abi",
+                                                   llvm::FunctionType::get(b.getVoidTy(), {i64}, false));
+            b.CreateCall(abi, {b.getInt64(JM_RUNTIME_ABI_VERSION)});
             auto callee = result->getOrInsertFunction("jm_runtime_set_aot",
                                                       llvm::FunctionType::get(b.getVoidTy(), {i64}, false));
             b.CreateCall(callee, {b.getInt64(1)});
@@ -592,6 +659,7 @@ std::string LLVMBackend::targetTriple() const {
     return target_.empty() ? llvm::sys::getDefaultTargetTriple() : target_;
 }
 NativeCode LLVMBackend::compile(const Module &input, const NativeFunctionRegistry &registry) const {
+    jm_runtime_require_abi(JM_RUNTIME_ABI_VERSION);
     initialize();
     for (const auto &identity : input.imports)
         if (!standardModule(identity) && !registry.hasModule(identity))
@@ -700,11 +768,19 @@ NativeCode LLVMBackend::compile(const Module &input, const NativeFunctionRegistr
         if (found == signatures.end())
             throw std::runtime_error("Native function not found: " + name);
         const auto &signature = found->second;
+        if (signature.result == Type::Struct || signature.result == Type::Tuple ||
+            signature.result == Type::Map || signature.result == Type::Range)
+            throw std::runtime_error(
+                "JM6002: Public native record returns require layout metadata; unsupported.");
         if (args.size() != signature.parameters.size())
             throw std::runtime_error("LLVM invocation argument count mismatch: " + name);
         std::uint64_t bits[4]{};
         for (std::size_t i = 0; i < args.size(); ++i) {
-            if (signature.parameters[i] == Type::Float) {
+            if ((signature.parameters[i] == Type::Vector2 || signature.parameters[i] == Type::Vector3 ||
+                 signature.parameters[i] == Type::Color) &&
+                args[i].type() == signature.parameters[i])
+                bits[i] = encodeAggregate(args[i]);
+            else if (signature.parameters[i] == Type::Float) {
                 double number;
                 if (args[i].type() == Type::Float)
                     number = std::get<double>(args[i].data);
@@ -750,6 +826,9 @@ NativeCode LLVMBackend::compile(const Module &input, const NativeFunctionRegistr
             throw std::runtime_error(llvmError(symbol.takeError()));
         using Entry = std::uint64_t (*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
         const auto output = symbol->toPtr<Entry>()(bits[0], bits[1], bits[2], bits[3]);
+        if (signature.result == Type::Vector2 || signature.result == Type::Vector3 ||
+            signature.result == Type::Color)
+            return decodeFFI(output, signature.result);
         if (signature.result == Type::String) {
             std::uint64_t size;
             auto *bytes = jm_string_bytes(output, &size);

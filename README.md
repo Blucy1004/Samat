@@ -2,9 +2,9 @@
 
 JM Engine is a lightweight C++20 engine project for building both 2D and 3D games. It uses SDL3 for the window and input, and OpenGL 3.3 for rendering. The goal is a small, focused engine that grows feature by feature, rather than a full production editor from day one.
 
-## Samat / 訓C正音 v0.5+ development milestone
+## Samat / 訓C正音 v0.6 development milestone
 
-The language now has exact Int/Float values, preserved type annotations and diagnostics, richer structured Korean syntax and two-way renderers, typed/verified JM IR, scalar globals and loop control, optional LLVM ORC JIT/object/AOT, engine-owned native adapters and shared event handlers. Interpreter and bootstrap x64 are retained; LLVM is optional. The v0.5+ update adds native String/List ownership, typed host callbacks, modules, richer interpreter data models and language-script Play. See [current implementation report and backend capability matrix](docs/Samat-v0.5-plus.md), and the [preceding v0.5 milestone](docs/Samat-v0.5.md).
+The native data update extends LLVM JIT/Linux AOT with Struct fields, Vector2/3, Color, Tuple, stepped Range and typed String-key Map execution. Typed List/Vector callbacks connect actual Scene properties to persistent engine events. Interpreter, bootstrap x64, optional LLVM and independent core builds remain. See [v0.6 implementation, validation and capability matrix](docs/Samat-v0.6.md); [v0.5+](docs/Samat-v0.5-plus.md) is the preceding checkpoint.
 
 ## Engine editor vertical slice
 
@@ -58,6 +58,6 @@ Growth path: **native data-model parity → qualified modules and editor persist
 
 Samat also has an experimental AST → JM IR → x86-64 in-memory native compiler for integer/control-flow functions. The interpreter remains the normal edit-and-run path. See [Samat Native Compilation](docs/Samat-Native-Compilation.md) for the CLI, native subset, and limitations.
 
-The original engine milestone scope is described below; consult the v0.5+ capability document for current language support.
+The original engine milestone scope is described below; consult the v0.6 capability document for current language support.
 
 The long-term product architecture, Samat design, Korean/code editor model, runtime, storage format, security boundaries, and milestones are described in [docs/JM_ENGINE_ARCHITECTURE.md](docs/JM_ENGINE_ARCHITECTURE.md). This prototype supports numbers, named parameters, `+ - * /`, parenthesized numeric expressions, function calls, and start/held/pressed input events. The legacy engine ScriptDocument play path still has a limited action grammar; the independent language core supports String/Bool/List/Map, general branches, loops and return values. Collision events and full editor undo/redo are not implemented yet. The 3D view is a scene-editing preview; the current Samat game runtime and platform physics are 2D-only.

@@ -1,0 +1,18 @@
+name: Samat independent core
+on: [push, pull_request]
+jobs:
+  core:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        sanitizer: [OFF, ON]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure independent core without LLVM
+        run: cmake -S . -B build -DJMENGINE_BUILD_ENGINE=OFF -DJMENGINE_ENABLE_LLVM=OFF -DSamat_ENABLE_SANITIZERS=${{ matrix.sanitizer }} -DCMAKE_BUILD_TYPE=Debug
+      - run: cmake --build build --parallel 2
+      - name: Tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: halt_on_error=1
+        run: ctest --test-dir build --output-on-failure

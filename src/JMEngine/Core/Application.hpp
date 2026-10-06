@@ -34,6 +34,7 @@ public:
     void startLanguagePlay(std::string source,bool korean=false);
     void stopPlay();
     bool isPlaying() const {return playing_;}
+    const Scene& scene() const {return scene_;}
 
 private:
     void processEvents();

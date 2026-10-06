@@ -1,0 +1,12 @@
+함수 tokens(text: String) -> List<String>:
+    List<String> 변수 result를 []로 정한다.
+    text.split(" ")의 각 token를 반복하며:
+        (token.length > 0)라면:
+            실행한다 result.push(token)
+    result를 반환한다.
+함수 main() -> Int:
+    숫자 변수 words를 tokens("let x = 10")로 정한다.
+    실행한다 println(words)
+    (((words.length == 4) and (words[0] == "let")) and (words[3] == "10"))라면:
+        42를 반환한다.
+    1를 반환한다.

@@ -30,6 +30,7 @@ struct GameObject {
     bool isStatic{false};
     float mass{1.0F};
     float gravityScale{1.0F};
+    float horizontalVelocity{0.0F};
     float verticalVelocity{0.0F};
     bool grounded{false};
     bool spinWhenPlaying{false};

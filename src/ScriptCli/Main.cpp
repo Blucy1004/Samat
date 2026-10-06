@@ -89,7 +89,7 @@ int repl() {
     return 0;
 }
 void help() {
-    std::cout << "Samat / 訓C正音 v0.5+\n"
+    std::cout << "Samat / 訓C正音 v0.6\n"
                  "  SamatCompiler [run] file.st [--entry main]\n"
                  "  SamatCompiler check file.st\n"
                  "  SamatCompiler --ast|--ir|--code|--korean file.st\n"
@@ -158,7 +158,7 @@ int main(int argc, char **argv) {
                 return 0;
             }
             if (arg == "--version") {
-                std::cout << "Samat / 訓C正音 0.5.1 (LLVM "
+                std::cout << "Samat / 訓C正音 0.6.0 (LLVM "
                           << (ir::LLVMBackend::available() ? "enabled" : "unavailable") << ")\n";
                 return 0;
             }

@@ -15,6 +15,9 @@ static_assert(static_cast<int>(Type::Int) == JM_RT_INT && static_cast<int>(Type:
                   static_cast<int>(Type::List) == JM_RT_LIST,
               "Language types must preserve runtime ABI version 1 tags.");
 namespace {
+bool aggregateType(Type type) {
+    return type == Type::Vector2 || type == Type::Vector3 || type == Type::Color;
+}
 
 Type inferredExpression(const ExpressionPtr &value, const std::unordered_map<std::string, Type> &variables,
                         const std::unordered_map<std::string, Type> &functions) {
@@ -47,6 +50,9 @@ Type inferredExpression(const ExpressionPtr &value, const std::unordered_map<std
             return standard->returnType;
         if (value->builtinSymbolName == "builtin.math.PI" || value->builtinSymbolName == "builtin.math.E")
             return Type::Float;
+        if (aggregateType(inferredExpression(value->left, variables, functions)))
+            return value->text == "normalized" ? inferredExpression(value->left, variables, functions)
+                                               : Type::Float;
         return Type::Int;
     case Expression::Kind::Unary:
         if (value->text == "!" || value->text == "not")
@@ -69,6 +75,10 @@ Type inferredExpression(const ExpressionPtr &value, const std::unordered_map<std
         if (value->left && value->left->kind == Expression::Kind::Member) {
             auto method = value->left->text;
             auto receiver = value->left->left;
+            auto receiverType = inferredExpression(receiver, variables, functions);
+            if (receiverType == Type::Vector2 || receiverType == Type::Vector3)
+                return method == "normalized" || method == "cross" || method == "lerp" ? receiverType
+                                                                                       : Type::Float;
             if (method == "contains" || method == "startsWith" || method == "endsWith")
                 return Type::Bool;
             if (method == "find" || method == "indexOf" || method == "codepointLength")
@@ -86,6 +96,14 @@ Type inferredExpression(const ExpressionPtr &value, const std::unordered_map<std
         }
         if (value->left && value->left->kind == Expression::Kind::Identifier) {
             const auto &name = value->left->text;
+            if (name == "range")
+                return Type::Range;
+            if (name == "Vector2")
+                return Type::Vector2;
+            if (name == "Vector3")
+                return Type::Vector3;
+            if (name == "Color")
+                return Type::Color;
             if (name == "int" || name == "bitXor")
                 return Type::Int;
             if (name == "float")
@@ -174,6 +192,27 @@ struct Lowerer {
     std::unordered_map<std::uint32_t, bool> constants;
     std::unordered_map<ValueId, Type> elements;
     std::unordered_map<std::uint32_t, Type> localElements;
+    std::unordered_map<std::string, const Statement *> structures, globalStructures;
+    std::unordered_map<ValueId, const Statement *> valueStructures;
+    std::unordered_map<uint32_t, const Statement *> localStructures;
+    std::unordered_map<ValueId, std::vector<Type>> tuples;
+    std::unordered_map<uint32_t, std::vector<Type>> localTuples;
+    std::pair<ValueId, const Statement *> structureReceiver(const ExpressionPtr &expressionValue) {
+        auto id = expression(expressionValue);
+        if (!valueStructures.contains(id))
+            throw std::runtime_error("JM6002: Struct layout is not statically known.");
+        return {id, valueStructures.at(id)};
+    }
+    size_t fieldIndex(const Statement &schema, const std::string &name) {
+        for (size_t i = 0; i < schema.body.size(); ++i)
+            if (schema.body[i].name == name)
+                return i;
+        throw std::runtime_error("JM2005: Unknown struct field: " + name);
+    }
+    ValueId recordGet(ValueId receiver, size_t slot, Type type) {
+        return runtime(JM_RT_RECORD_GET, {receiver, integer((static_cast<int64_t>(type) << 32) | slot)},
+                       type);
+    }
 
     BlockId block(const std::string &name) {
         const BlockId id = nextBlock++;
@@ -231,7 +270,7 @@ struct Lowerer {
         in.arguments = std::move(arguments);
         in.type = type;
         auto result = emit(in);
-        if (type == Type::List)
+        if (type == Type::List || type == Type::Map)
             elements[result] = element;
         return result;
     }
@@ -280,7 +319,17 @@ struct Lowerer {
         } else
             throw std::runtime_error("JM IR cannot resolve variable '" + name + "'.");
         auto result = emit(in);
-        if (in.type == Type::List && localElements.contains(in.local))
+        if (in.type == Type::Struct) {
+            if (in.op == Op::Load && localStructures.contains(in.local))
+                valueStructures[result] = localStructures.at(in.local);
+            else if (in.op == Op::GlobalLoad && globalStructures.contains(in.symbol))
+                valueStructures[result] = globalStructures.at(in.symbol);
+            else
+                throw std::runtime_error("JM6002: Unknown Struct layout.");
+        }
+        if (in.type == Type::Tuple && localTuples.contains(in.local))
+            tuples[result] = localTuples.at(in.local);
+        if ((in.type == Type::List || in.type == Type::Map) && localElements.contains(in.local))
             elements[result] = localElements[in.local];
         return result;
     }
@@ -301,15 +350,54 @@ struct Lowerer {
         } else
             throw std::runtime_error("Unknown assignment variable '" + name + "'.");
         in.left = convert(value, in.type);
-        if (in.type == Type::List) {
+        if (in.type == Type::List || in.type == Type::Map) {
             auto element = elementOf(value);
             if (localElements.contains(in.local) && localElements[in.local] != element)
                 throw std::runtime_error("List assignment changes its native element type.");
             localElements[in.local] = element;
         }
+        if (in.type == Type::Struct) {
+            if (!valueStructures.contains(value))
+                throw std::runtime_error("JM6002: Unknown assigned Struct layout.");
+            if (in.op == Op::Store) {
+                if (localStructures.contains(in.local) &&
+                    localStructures.at(in.local) != valueStructures.at(value))
+                    throw std::runtime_error("JM2005: Struct layout assignment mismatch.");
+                localStructures[in.local] = valueStructures.at(value);
+            } else if (!globalStructures.contains(in.symbol) ||
+                       globalStructures.at(in.symbol) != valueStructures.at(value))
+                throw std::runtime_error("JM2005: Struct global layout mismatch.");
+        }
+        if (in.type == Type::Tuple) {
+            if (!tuples.contains(value))
+                throw std::runtime_error("JM6002: Unknown Tuple layout.");
+            if (in.op != Op::Store)
+                throw std::runtime_error("JM6002: Tuple globals unsupported.");
+            localTuples[in.local] = tuples.at(value);
+        }
         at(current).instructions.push_back(in);
     }
     ValueId defaultValue(Type type, Type element = Type::Any) {
+        if (type == Type::Map && element == Type::Any)
+            throw std::runtime_error("JM6002: Native Map requires explicit value type metadata.");
+        if (type == Type::Map)
+            return runtime(JM_RT_MAP_CREATE,
+                           {integer(static_cast<int>(element == Type::Any ? Type::Int : element))}, Type::Map,
+                           element == Type::Any ? Type::Int : element);
+        if (aggregateType(type)) {
+            auto result = runtime(JM_RT_AGGREGATE_CREATE, {integer(static_cast<int>(type))}, type);
+            size_t count = type == Type::Vector2 ? 2 : type == Type::Vector3 ? 3 : 4;
+            for (size_t i = 0; i < count; ++i) {
+                Instruction field;
+                field.op = Op::FloatConstant;
+                field.type = Type::Float;
+                field.floating = type == Type::Color && i == 3 ? 1 : 0;
+                runtime(JM_RT_AGGREGATE_APPEND, {result, emit(field), integer(static_cast<int>(type))},
+                        Type::Void);
+            }
+            return result;
+        }
+
         if (type == Type::String) {
             Instruction in;
             in.op = Op::StringConstant;
@@ -352,6 +440,46 @@ struct Lowerer {
             }
             throw std::runtime_error("JM IR scalar backend does not support " + value->literal.typeName() +
                                      " literals. Use Interpreter for String/List/Map.");
+        case Expression::Kind::Map: {
+            if (expectedElement == Type::Any)
+                throw std::runtime_error("JM6002: Native Map requires an explicit Map<String,T> annotation.");
+            std::vector<std::pair<ValueId, ValueId>> entries;
+            Type element = expectedElement;
+            for (auto &entry : value->entries) {
+                Instruction key;
+                key.op = Op::StringConstant;
+                key.type = Type::String;
+                key.symbol = entry.first;
+                auto id = expression(entry.second);
+                if (element == Type::Any)
+                    element = function.valueTypes[id];
+                if (function.valueTypes[id] != element &&
+                    !(element == Type::Float && function.valueTypes[id] == Type::Int))
+                    throw std::runtime_error("JM6002: Native Map values must be homogeneous.");
+                entries.push_back({emit(key), convert(id, element)});
+            }
+            if (element == Type::Any)
+                element = Type::Int;
+            if (element != Type::Int && element != Type::Float && element != Type::Bool &&
+                element != Type::String)
+                throw std::runtime_error("JM6002: Unsupported native Map element type.");
+            auto result = runtime(JM_RT_MAP_CREATE, {integer(static_cast<int>(element))}, Type::Map, element);
+            for (auto [key, id] : entries)
+                runtime(JM_RT_MAP_SET, {result, key, id}, Type::Void);
+            return result;
+        }
+        case Expression::Kind::Tuple: {
+            auto result = runtime(JM_RT_RECORD_CREATE, {integer(static_cast<int>(Type::Tuple))}, Type::Tuple);
+            for (auto &item : value->elements) {
+                auto id = expression(item);
+                auto type = function.valueTypes[id];
+                if (type == Type::Struct || type == Type::Tuple || type == Type::Any || type == Type::Void)
+                    throw std::runtime_error("JM6002: Nested/unknown Tuple field unsupported.");
+                runtime(JM_RT_RECORD_APPEND, {result, id, integer(static_cast<int>(type))}, Type::Void);
+                tuples[result].push_back(type);
+            }
+            return result;
+        }
         case Expression::Kind::Array: {
             std::vector<ValueId> values;
             Type element = expectedElement == Type::Any ? Type::Int : expectedElement;
@@ -380,8 +508,23 @@ struct Lowerer {
             return result;
         }
         case Expression::Kind::Index: {
-            auto receiver = expression(value->left), index = convert(expression(value->right), Type::Int);
+            auto receiver = expression(value->left);
+            auto rawIndex = expression(value->right);
+            if (function.valueTypes[receiver] == Type::Map)
+                return runtime(JM_RT_MAP_GET, {receiver, convert(rawIndex, Type::String)},
+                               elementOf(receiver));
+            auto index = convert(rawIndex, Type::Int);
             auto type = function.valueTypes[receiver];
+            if (type == Type::Tuple) {
+                if (!tuples.contains(receiver) || value->right->kind != Expression::Kind::Literal ||
+                    value->right->literal.type() != Type::Int)
+                    throw std::runtime_error(
+                        "JM6002: Native Tuple index must be a statically known Int literal.");
+                auto slot = std::get<int64_t>(value->right->literal.data);
+                if (slot < 0 || static_cast<size_t>(slot) >= tuples[receiver].size())
+                    throw std::runtime_error("JM3003: Tuple index out of bounds.");
+                return recordGet(receiver, slot, tuples[receiver][slot]);
+            }
             if (type == Type::String)
                 return runtime(JM_RT_INDEX, {receiver, index}, Type::String);
             if (type == Type::List) {
@@ -472,6 +615,29 @@ struct Lowerer {
             Instruction instruction;
             instruction.op = found->second;
             const auto leftType = function.valueTypes.at(left), rightType = function.valueTypes.at(right);
+            if (aggregateType(leftType) || aggregateType(rightType)) {
+                if ((value->text == "==" || value->text == "!=") && leftType == rightType) {
+                    auto result = runtime(JM_RT_AGGREGATE_EQUAL, {left, right}, Type::Bool);
+                    if (value->text == "==")
+                        return result;
+                    Instruction inverse;
+                    inverse.op = Op::LogicalNot;
+                    inverse.left = result;
+                    inverse.type = Type::Bool;
+                    return emit(inverse);
+                }
+                if ((value->text == "+" || value->text == "-") && leftType == rightType &&
+                    leftType != Type::Color)
+                    return runtime(value->text == "+" ? JM_RT_VECTOR_ADD : JM_RT_VECTOR_SUBTRACT,
+                                   {left, right}, leftType);
+                if ((value->text == "*" || value->text == "/") &&
+                    (leftType == Type::Vector2 || leftType == Type::Vector3))
+                    return runtime(value->text == "*" ? JM_RT_VECTOR_SCALE : JM_RT_VECTOR_DIVIDE,
+                                   {left, convert(right, Type::Float)}, leftType);
+                if (value->text == "*" && (rightType == Type::Vector2 || rightType == Type::Vector3))
+                    return runtime(JM_RT_VECTOR_SCALE, {right, convert(left, Type::Float)}, rightType);
+                throw std::runtime_error("JM6002: Invalid native aggregate operation.");
+            }
             if (leftType == Type::List && rightType == Type::List &&
                 (value->text == "==" || value->text == "!=")) {
                 auto result = runtime(JM_RT_LIST_EQUAL, {left, right}, Type::Bool);
@@ -517,6 +683,55 @@ struct Lowerer {
             return emit(std::move(instruction));
         }
         case Expression::Kind::Member: {
+            if (value->left && (value->left->kind != Expression::Kind::Identifier ||
+                                hasLocal(value->left->text) || global(value->left->text))) {
+                auto receiver = expression(value->left);
+                auto type = function.valueTypes[receiver];
+                if (type == Type::Range) {
+                    auto slot = value->text == "start"  ? 0
+                                : value->text == "end"  ? 1
+                                : value->text == "step" ? 2
+                                                        : -1;
+                    if (slot < 0)
+                        throw std::runtime_error("JM2005: Unknown Range field.");
+                    return runtime(JM_RT_RANGE_FIELD, {receiver, integer(slot)}, Type::Int);
+                }
+                if (type == Type::Map && value->text == "length")
+                    return runtime(JM_RT_MAP_LENGTH, {receiver}, Type::Int);
+                if (type == Type::Struct) {
+                    if (!valueStructures.contains(receiver))
+                        throw std::runtime_error("JM6002: Unknown Struct field layout.");
+                    auto schema = valueStructures[receiver];
+                    auto slot = fieldIndex(*schema, value->text);
+                    auto &field = schema->body[slot];
+                    auto result = recordGet(receiver, slot, field.declaredType);
+                    if (field.declaredType == Type::List || field.declaredType == Type::Map)
+                        elements[result] = field.elementType;
+                    return result;
+                }
+                if (type == Type::Tuple) {
+                    if (!tuples.contains(receiver) || value->text.empty() ||
+                        value->text.find_first_not_of("0123456789") != std::string::npos)
+                        throw std::runtime_error("JM6002: Tuple member requires a numeric field.");
+                    auto slot = std::stoull(value->text);
+                    if (slot >= tuples[receiver].size())
+                        throw std::runtime_error("JM3003: Tuple field out of bounds.");
+                    return recordGet(receiver, slot, tuples[receiver][slot]);
+                }
+                if (aggregateType(type)) {
+                    if (value->text == "length")
+                        return runtime(JM_RT_VECTOR_LENGTH, {receiver}, Type::Float);
+                    if (value->text == "normalized")
+                        return runtime(JM_RT_VECTOR_NORMALIZED, {receiver}, type);
+                    if (value->text == "lengthSquared")
+                        return runtime(JM_RT_VECTOR_DOT, {receiver, receiver}, Type::Float);
+                    std::string fields = type == Type::Color ? "rgba" : type == Type::Vector2 ? "xy" : "xyz";
+                    auto field = fields.find(value->text);
+                    if (value->text.size() != 1 || field == std::string::npos)
+                        throw std::runtime_error("JM2005: Unknown aggregate field: " + value->text);
+                    return runtime(JM_RT_FIELD_GET, {receiver, integer(field)}, Type::Float);
+                }
+            }
             if (value->left && value->left->kind == Expression::Kind::Identifier &&
                 value->left->text == "math" && !hasLocal("math") && !global("math") &&
                 (value->text == "PI" || value->text == "E")) {
@@ -543,6 +758,86 @@ struct Lowerer {
             return expression(call);
         }
         case Expression::Kind::Call: {
+            if (value->left && value->left->kind == Expression::Kind::Identifier &&
+                !declarations.contains(value->left->text)) {
+                auto name = value->left->text;
+                if (name == "range") {
+                    if (value->arguments.size() != 2 && value->arguments.size() != 3)
+                        throw std::runtime_error("JM2003: Range arity mismatch.");
+                    std::vector<ValueId> args;
+                    for (auto &arg : value->arguments) {
+                        if (!arg.name.empty())
+                            throw std::runtime_error("JM6002: Named Range arguments unsupported.");
+                        args.push_back(convert(expression(arg.value), Type::Int));
+                    }
+                    if (args.size() == 2)
+                        args.push_back(integer(1));
+                    return runtime(JM_RT_RANGE_CREATE, args, Type::Range);
+                }
+                if (structures.contains(name)) {
+                    auto schema = structures.at(name);
+                    std::vector<ValueId> fields(schema->body.size());
+                    std::vector<bool> supplied(fields.size());
+                    size_t positional = 0;
+                    for (auto &arg : value->arguments) {
+                        auto slot = arg.name.empty() ? positional++ : fieldIndex(*schema, arg.name);
+                        if (slot >= fields.size() || supplied[slot])
+                            throw std::runtime_error("JM2003: Struct argument mismatch.");
+                        auto &field = schema->body[slot];
+                        auto id = expression(arg.value, field.elementType);
+                        fields[slot] = convert(id, field.declaredType);
+                        supplied[slot] = true;
+                    }
+                    auto result =
+                        runtime(JM_RT_RECORD_CREATE, {integer(static_cast<int>(Type::Struct))}, Type::Struct);
+                    for (size_t i = 0; i < fields.size(); ++i) {
+                        auto &field = schema->body[i];
+                        if (field.declaredType == Type::Any || field.declaredType == Type::Void ||
+                            field.declaredType == Type::Struct || field.declaredType == Type::Tuple)
+                            throw std::runtime_error(
+                                "JM6002: Native Struct requires concrete non-record fields.");
+                        if (!supplied[i]) {
+                            if (!field.expression)
+                                throw std::runtime_error("JM2003: Missing Struct field: " + field.name);
+                            fields[i] =
+                                convert(expression(field.expression, field.elementType), field.declaredType);
+                        }
+                        runtime(JM_RT_RECORD_APPEND,
+                                {result, fields[i], integer(static_cast<int>(field.declaredType))},
+                                Type::Void);
+                    }
+                    valueStructures[result] = schema;
+                    return result;
+                }
+                Type type = name == "Vector2"   ? Type::Vector2
+                            : name == "Vector3" ? Type::Vector3
+                            : name == "Color"   ? Type::Color
+                                                : Type::Any;
+                if (aggregateType(type)) {
+                    size_t count = type == Type::Vector2 ? 2 : type == Type::Vector3 ? 3 : 4;
+                    if (value->arguments.size() != count &&
+                        !(type == Type::Color && value->arguments.size() == 3))
+                        throw std::runtime_error("JM2007: Aggregate constructor arity mismatch.");
+                    auto result = runtime(JM_RT_AGGREGATE_CREATE, {integer(static_cast<int>(type))}, type);
+                    for (auto &arg : value->arguments) {
+                        if (!arg.name.empty())
+                            throw std::runtime_error("Named vector constructor arguments unsupported.");
+                        runtime(JM_RT_AGGREGATE_APPEND,
+                                {result, convert(expression(arg.value), Type::Float),
+                                 integer(static_cast<int>(type))},
+                                Type::Void);
+                    }
+                    if (value->arguments.size() < count) {
+                        Instruction one;
+                        one.op = Op::FloatConstant;
+                        one.type = Type::Float;
+                        one.floating = 1;
+                        runtime(JM_RT_AGGREGATE_APPEND, {result, emit(one), integer(static_cast<int>(type))},
+                                Type::Void);
+                    }
+                    return result;
+                }
+            }
             if (value->left && value->left->kind == Expression::Kind::Member) {
                 const auto &member = *value->left;
                 if (member.left && (member.left->kind != Expression::Kind::Identifier ||
@@ -560,6 +855,38 @@ struct Lowerer {
                         if (args.size() != count)
                             throw std::runtime_error("Method argument count mismatch: " + member.text);
                     };
+                    if (type == Type::Map) {
+                        auto method = member.text;
+                        if (method == "containsKey" || method == "remove") {
+                            arity(1);
+                            return runtime(method == "containsKey" ? JM_RT_MAP_CONTAINS : JM_RT_MAP_REMOVE,
+                                           {receiver, convert(args[0], Type::String)}, Type::Bool);
+                        }
+                        arity(0);
+                        if (method == "clear")
+                            return runtime(JM_RT_MAP_CLEAR, {receiver}, Type::Void);
+                        if (method == "keys" || method == "values")
+                            return runtime(method == "keys" ? JM_RT_MAP_KEYS : JM_RT_MAP_VALUES, {receiver},
+                                           Type::List, method == "keys" ? Type::String : elementOf(receiver));
+                        throw std::runtime_error("JM6002: Unknown native Map method.");
+                    }
+                    if (type == Type::Vector2 || type == Type::Vector3) {
+                        static const std::unordered_map<std::string, int> ops{
+                            {"length", JM_RT_VECTOR_LENGTH}, {"normalized", JM_RT_VECTOR_NORMALIZED},
+                            {"dot", JM_RT_VECTOR_DOT},       {"distance", JM_RT_VECTOR_DISTANCE},
+                            {"cross", JM_RT_VECTOR_CROSS},   {"lerp", JM_RT_VECTOR_LERP}};
+                        auto found = ops.find(member.text);
+                        if (found == ops.end())
+                            throw std::runtime_error("Unsupported native vector method.");
+                        std::vector<ValueId> vectorArgs{receiver};
+                        for (size_t i = 0; i < args.size(); ++i)
+                            vectorArgs.push_back(convert(args[i], i == 1 ? Type::Float : type));
+                        return runtime(found->second, vectorArgs,
+                                       member.text == "length" || member.text == "dot" ||
+                                               member.text == "distance"
+                                           ? Type::Float
+                                           : type);
+                    }
                     if (type == Type::String) {
                         const std::unordered_map<std::string, std::pair<int, Type>> methods{
                             {"substring", {JM_RT_SUBSTRING, Type::String}},
@@ -758,7 +1085,8 @@ struct Lowerer {
                                     ? found->second->parameterTypes[index]
                                     : Type::Any;
                     result = convert(result, type == Type::Any ? Type::Int : type);
-                    if (type == Type::List && index < found->second->parameterElementTypes.size() &&
+                    if ((type == Type::List || type == Type::Map) &&
+                        index < found->second->parameterElementTypes.size() &&
                         found->second->parameterElementTypes[index] != Type::Any &&
                         elementOf(result) != found->second->parameterElementTypes[index])
                         throw std::runtime_error("Typed List parameter element mismatch.");
@@ -767,6 +1095,9 @@ struct Lowerer {
                     if (!argument.name.empty() && argument.name != metadata->parameterNames[index])
                         throw std::runtime_error("Typed FFI named arguments must match metadata order.");
                     result = convert(result, metadata->parameterTypes[index]);
+                    if (metadata->parameterTypes[index] == Type::List &&
+                        elementOf(result) != metadata->parameterElementTypes[index])
+                        throw std::runtime_error("JM7001: Typed FFI List element mismatch.");
                 }
                 instruction.arguments.push_back(result);
                 instruction.argumentNames.push_back(argument.name);
@@ -798,7 +1129,10 @@ struct Lowerer {
                     id = convert(id, type);
             }
             auto id = emit(std::move(instruction));
-            if (found != declarations.end() && found->second->returnType == Type::List)
+            if (metadata && metadata->returnType == Type::List)
+                elements[id] = metadata->returnElementType;
+            if (found != declarations.end() &&
+                (found->second->returnType == Type::List || found->second->returnType == Type::Map))
                 elements[id] = found->second->returnElementType;
             return id;
         }
@@ -824,7 +1158,8 @@ struct Lowerer {
                 const auto type = statement.declaredType == Type::Any ? function.valueTypes.at(value)
                                                                       : statement.declaredType;
                 if (type != Type::String && type != Type::List && type != Type::Int && type != Type::Bool &&
-                    type != Type::Float)
+                    type != Type::Float && type != Type::Struct && type != Type::Tuple && type != Type::Map &&
+                    type != Type::Range && !aggregateType(type))
                     throw std::runtime_error("Native local '" + statement.name + "' has unsupported type " +
                                              typeName(type) + "; use Interpreter.");
                 declare(statement.name, type, statement.constant);
@@ -832,10 +1167,84 @@ struct Lowerer {
                 break;
             }
             case Statement::Kind::Assignment: {
+                if (statement.target && statement.target->kind == Expression::Kind::Member &&
+                    statement.target->left && statement.target->left->kind == Expression::Kind::Identifier &&
+                    !hasLocal(statement.target->left->text) && !global(statement.target->left->text)) {
+                    auto property = statement.target->text;
+                    if (property != "position" && property != "velocity" && property != "scale" &&
+                        property != "rotation")
+                        throw std::runtime_error("JM6002: Unsupported writable host property.");
+                    auto argument = statement.expression;
+                    if (statement.operation != "=") {
+                        if (statement.operation != "+=" && statement.operation != "-=")
+                            throw std::runtime_error("Unsupported host compound assignment.");
+                        argument = std::make_shared<Expression>();
+                        argument->kind = Expression::Kind::Binary;
+                        argument->text = statement.operation.substr(0, 1);
+                        argument->left = statement.target;
+                        argument->right = statement.expression;
+                    }
+                    property[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(property[0])));
+                    auto member = std::make_shared<Expression>();
+                    member->kind = Expression::Kind::Member;
+                    member->left = statement.target->left;
+                    member->text = "set" + property;
+                    auto call = std::make_shared<Expression>();
+                    call->kind = Expression::Kind::Call;
+                    call->left = member;
+                    call->builtinSymbolName = "builtin." + member->left->text + "." + member->text;
+                    call->builtinSymbolId = stableBuiltinSymbolId(call->builtinSymbolName);
+                    call->arguments = {{"", argument}};
+                    expression(call);
+                    break;
+                }
+                if (statement.target && statement.target->kind == Expression::Kind::Member) {
+                    auto [receiver, schema] = structureReceiver(statement.target->left);
+                    auto slot = fieldIndex(*schema, statement.target->text);
+                    auto &field = schema->body[slot];
+                    auto result =
+                        convert(expression(statement.expression, field.elementType), field.declaredType);
+                    if (statement.operation != "=") {
+                        auto old = recordGet(receiver, slot, field.declaredType);
+                        if (field.declaredType == Type::Vector2 || field.declaredType == Type::Vector3) {
+                            if (statement.operation != "+=" && statement.operation != "-=")
+                                throw std::runtime_error(
+                                    "JM6002: Unsupported Struct Vector compound operation.");
+                            result = runtime(statement.operation == "+=" ? JM_RT_VECTOR_ADD
+                                                                         : JM_RT_VECTOR_SUBTRACT,
+                                             {old, result}, field.declaredType);
+                        } else {
+                            Instruction op;
+                            op.left = old;
+                            op.right = result;
+                            op.type = field.declaredType;
+                            op.op = statement.operation == "+="   ? Op::Add
+                                    : statement.operation == "-=" ? Op::Subtract
+                                    : statement.operation == "*=" ? Op::Multiply
+                                    : statement.operation == "/=" ? Op::Divide
+                                                                  : Op::Modulo;
+                            if (field.declaredType != Type::Int && field.declaredType != Type::Float)
+                                throw std::runtime_error("JM6002: Unsupported Struct compound operation.");
+                            result = emit(op);
+                        }
+                    }
+                    runtime(
+                        JM_RT_RECORD_SET,
+                        {receiver, integer((static_cast<int64_t>(field.declaredType) << 32) | slot), result},
+                        Type::Void);
+                    break;
+                }
                 if (statement.target && statement.target->kind == Expression::Kind::Index) {
                     if (statement.operation != "=")
                         throw std::runtime_error("Native compound indexed assignment is not supported yet.");
                     auto receiver = expression(statement.target->left);
+                    if (function.valueTypes[receiver] == Type::Map) {
+                        runtime(JM_RT_MAP_SET,
+                                {receiver, convert(expression(statement.target->right), Type::String),
+                                 convert(expression(statement.expression), elementOf(receiver))},
+                                Type::Void);
+                        break;
+                    }
                     if (function.valueTypes[receiver] != Type::List)
                         throw std::runtime_error("Native indexed assignment requires List.");
                     runtime(JM_RT_LIST_SET,
@@ -855,6 +1264,15 @@ struct Lowerer {
                     in.left = old;
                     in.right = convert(result, type);
                     in.type = type;
+                    if (type == Type::Vector2 || type == Type::Vector3) {
+                        if (statement.operation != "+=" && statement.operation != "-=")
+                            throw std::runtime_error("Native vector compound operation requires +=/-=.");
+                        result =
+                            runtime(statement.operation == "+=" ? JM_RT_VECTOR_ADD : JM_RT_VECTOR_SUBTRACT,
+                                    {old, in.right}, type);
+                        store(statement.target->text, result);
+                        break;
+                    }
                     if (type == Type::String) {
                         if (statement.operation != "+=")
                             throw std::runtime_error("String compound assignment requires +=.");
@@ -877,7 +1295,7 @@ struct Lowerer {
                 break;
             case Statement::Kind::Return: {
                 const ValueId result = expression(statement.expression, function.returnElementType);
-                if (function.returnType == Type::List) {
+                if (function.returnType == Type::List || function.returnType == Type::Map) {
                     auto element = elementOf(result);
                     if (function.returnElementType != Type::Any && function.returnElementType != element)
                         throw std::runtime_error("Typed List return element mismatch.");
@@ -973,12 +1391,15 @@ struct Lowerer {
             }
             case Statement::Kind::ForEach: {
                 auto source = expression(statement.expression);
-                if (function.valueTypes[source] != Type::List)
-                    throw std::runtime_error("Native foreach currently requires homogeneous List.");
-                auto element = elementOf(source);
-                auto snapshot = runtime(JM_RT_LIST_CLONE, {source}, Type::List, element);
-                auto end = runtime(JM_RT_LENGTH,
-                                   {snapshot, integer(0), integer(static_cast<int>(Type::List))}, Type::Int);
+                auto isRange = function.valueTypes[source] == Type::Range;
+                if (function.valueTypes[source] != Type::List && !isRange)
+                    throw std::runtime_error("Native foreach requires homogeneous List or Range.");
+                auto element = isRange ? Type::Int : elementOf(source);
+                auto snapshot = isRange ? source : runtime(JM_RT_LIST_CLONE, {source}, Type::List, element);
+                auto end = isRange ? runtime(JM_RT_RANGE_LENGTH, {snapshot}, Type::Int)
+                                   : runtime(JM_RT_LENGTH,
+                                             {snapshot, integer(0), integer(static_cast<int>(Type::List))},
+                                             Type::Int);
                 scopes.emplace_back();
                 declare(statement.name, element);
                 auto counter = "$foreach" + std::to_string(nextValue);
@@ -999,8 +1420,10 @@ struct Lowerer {
                 loops.emplace_back(endBlock, stepBlock);
                 select(bodyBlock);
                 store(statement.name,
-                      runtime(JM_RT_LIST_GET, {snapshot, load(counter), integer(static_cast<int>(element))},
-                              element),
+                      isRange
+                          ? runtime(JM_RT_RANGE_GET, {snapshot, load(counter)}, Type::Int)
+                          : runtime(JM_RT_LIST_GET,
+                                    {snapshot, load(counter), integer(static_cast<int>(element))}, element),
                       true);
                 scopes.emplace_back();
                 statements(statement.body);
@@ -1059,7 +1482,7 @@ struct Lowerer {
             auto element = i < declaration.parameterElementTypes.size() ? declaration.parameterElementTypes[i]
                                                                         : Type::Any;
             function.parameterElementTypes.push_back(element);
-            if (type == Type::List) {
+            if (type == Type::List || type == Type::Map) {
                 if (element == Type::Any)
                     throw std::runtime_error("Native List parameters require List<T> annotations.");
                 localElements[slot] = element;
@@ -1073,6 +1496,7 @@ struct Lowerer {
             at(current).terminator = {Terminator::Kind::Return, result, 0, 0};
         }
         function.valueCount = nextValue;
+        function.valueElementTypes = elements;
         return std::move(function);
     }
 };
@@ -1150,7 +1574,13 @@ bool lower(const Program &program, Module &output, LoweringDiagnostic &diagnosti
             } else
                 normalized.push_back(item);
         }
+        std::unordered_map<std::string, const Statement *> structures, globalStructures;
+        for (auto &item : normalized)
+            if (item.kind == Statement::Kind::Struct)
+                structures[item.name] = &item;
         std::unordered_map<std::string, Type> variables, signatures;
+        for (auto &[name, schema] : structures)
+            signatures[name] = Type::Struct;
         std::unordered_set<std::string> inferred;
         if (registry)
             for (const auto &info : registry->allMetadata())
@@ -1203,9 +1633,16 @@ bool lower(const Program &program, Module &output, LoweringDiagnostic &diagnosti
                     else
                         type = variables.at(item.name);
                 }
-                if (type != Type::String && type != Type::Int && type != Type::Float && type != Type::Bool)
+                if (type != Type::String && type != Type::Int && type != Type::Float && type != Type::Bool &&
+                    type != Type::Struct && !aggregateType(type))
                     throw std::runtime_error("Global " + item.name +
                                              " uses a non-scalar type; use Interpreter.");
+                if (type == Type::Struct) {
+                    if (!item.expression || item.expression->kind != Expression::Kind::Call ||
+                        !item.expression->left || !structures.contains(item.expression->left->text))
+                        throw std::runtime_error("JM6002: Global Struct requires a direct constructor.");
+                    globalStructures[item.name] = structures.at(item.expression->left->text);
+                }
                 result.globals.push_back({item.name, type, item.constant});
                 Statement assignment;
                 assignment.kind = Statement::Kind::Assignment;
@@ -1220,7 +1657,9 @@ bool lower(const Program &program, Module &output, LoweringDiagnostic &diagnosti
                 if (item.fileImport)
                     throw std::runtime_error("Resolve file imports with loadModules before lowering.");
                 result.imports.push_back(item.name);
-            } else if (item.kind == Statement::Kind::Enum || item.kind == Statement::Kind::Struct)
+            } else if (item.kind == Statement::Kind::Struct) {
+                continue;
+            } else if (item.kind == Statement::Kind::Enum)
                 throw std::runtime_error(
                     "JM6002: Native Enum/Struct runtime is unsupported; use Interpreter.");
             else
@@ -1233,6 +1672,8 @@ bool lower(const Program &program, Module &output, LoweringDiagnostic &diagnosti
                 lowerer.module = &result;
                 lowerer.registry = registry;
                 lowerer.declarations = declarations;
+                lowerer.structures = structures;
+                lowerer.globalStructures = globalStructures;
                 result.functions.push_back(lowerer.build(item));
             }
         if (!result.globals.empty()) {
@@ -1240,6 +1681,8 @@ bool lower(const Program &program, Module &output, LoweringDiagnostic &diagnosti
             lowerer.module = &result;
             lowerer.registry = registry;
             lowerer.declarations = declarations;
+            lowerer.structures = structures;
+            lowerer.globalStructures = globalStructures;
             result.functions.push_back(lowerer.build(initializer));
         }
         if (result.functions.empty())
