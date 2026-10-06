@@ -75,8 +75,9 @@ script::ir::NativeFunctionRegistry engineNativeFunctions() {
     auto add = [&](std::string symbol, std::string korean, std::vector<std::string> names,
                    Registry::Function function, std::string documentation) {
         std::vector<Type> types(names.size(), Type::Int);
-        registry.registerFunction({symbol, symbol.substr(8), korean, documentation, names, types, Type::Int, {}, Type::Any},
-                                  function);
+        registry.registerFunction(
+            {symbol, symbol.substr(8), korean, documentation, names, types, Type::Int, {}, Type::Any},
+            function);
     };
     add("builtin.player.move", "플레이어.이동", {"direction", "speed"}, moveThunk,
         "Move X by direction * speed * frame delta; returns 1, or -1 if no player/context.");
@@ -92,7 +93,8 @@ script::ir::NativeFunctionRegistry engineNativeFunctions() {
     auto typed = [&](std::string symbol, std::vector<std::string> names, std::vector<Type> types, Type result,
                      Registry::TypedFunction function, std::string documentation) {
         registry.registerTypedFunction(
-            {symbol, symbol.substr(8), symbol, documentation, names, types, result, {}, Type::Any}, std::move(function));
+            {symbol, symbol.substr(8), symbol, documentation, names, types, result, {}, Type::Any},
+            std::move(function));
     };
     typed(
         "builtin.player.moveFloat", {"direction", "speed"}, {Type::Float, Type::Float}, Type::Bool,
@@ -258,7 +260,7 @@ script::ir::NativeFunctionRegistry engineNativeFunctions() {
         },
         "Read a named held key.");
     typed(
-        "builtin.scene.find", {"name"}, {Type::String}, Type::String,
+        "builtin.scene.findId", {"name"}, {Type::String}, Type::String,
         [](const auto &args) {
             if (active)
                 for (const auto &object : active->scene.objects())
@@ -300,6 +302,64 @@ script::ir::NativeFunctionRegistry engineNativeFunctions() {
             return script::Value(static_cast<I64>(active ? active->scene.objects().size() : 0));
         },
         "Current scene object count.");
+    Registry::Metadata findInfo{"builtin.scene.find",
+                                "scene.find",
+                                "오브젝트 찾기",
+                                "찾은 오브젝트가 없으면 빈 값을 반환해요.",
+                                {"name"},
+                                {Type::String},
+                                Type::Optional,
+                                {},
+                                Type::Entity};
+    registry.registerTypedFunction(findInfo, [](const auto &args) {
+        if (active)
+            for (const auto &object : active->scene.objects())
+                if (object.name == std::get<std::string>(args[0].data))
+                    return script::Value::optional(
+                        Type::Entity, script::Value(script::EntityReference{
+                                          object.id, active->scene.identity(), object.generation}));
+        return script::Value::optional(Type::Entity);
+    });
+    auto resolve = [](const script::Value &value) -> GameObject & {
+        auto handle = std::get<script::EntityReference>(value.data);
+        if (active && handle.sceneIdentity == active->scene.identity())
+            for (auto &object : active->scene.objects())
+                if (object.id == handle.id && object.generation == handle.generation)
+                    return object;
+        throw std::runtime_error(
+            "JM7102: Entity reference is stale, destroyed, or belongs to another Scene.");
+    };
+    typed(
+        "builtin.entity.position", {"entity"}, {Type::Entity}, Type::Vector2,
+        [resolve](const auto &args) {
+            auto &object = resolve(args[0]);
+            return script::Value(script::Vector2Value{object.position.x, object.position.y});
+        },
+        "오브젝트의 현재 위치예요.");
+    typed(
+        "builtin.entity.setPosition", {"entity", "position"}, {Type::Entity, Type::Vector2}, Type::Void,
+        [resolve](const auto &args) {
+            auto &object = resolve(args[0]);
+            auto value = std::get<script::Vector2Value>(args[1].data);
+            auto x = finiteFloat(value.x), y = finiteFloat(value.y);
+            object.position.x = x;
+            object.position.y = y;
+            return script::Value{};
+        },
+        "오브젝트를 이동해요.");
+    typed(
+        "builtin.entity.id", {"entity"}, {Type::Entity}, Type::String,
+        [resolve](const auto &args) { return script::Value(resolve(args[0]).id); },
+        "검증한 오브젝트 ID예요.");
+    typed(
+        "builtin.entity.destroy", {"entity"}, {Type::Entity}, Type::Void,
+        [resolve](const auto &args) {
+            auto id = resolve(args[0]).id;
+            active->scene.select(id);
+            active->scene.deleteSelected();
+            return script::Value{};
+        },
+        "오브젝트를 삭제해요. 이후 참조는 만료돼요.");
     return registry;
 }
 std::function<bool(std::string_view)> engineModuleResolver() {
@@ -351,12 +411,69 @@ void executeNativeEvent(const script::ir::Module &module, const script::ir::Nati
 } // namespace jm
 
 namespace jm {
+namespace {
+bool liveScalar(script::Type type) {
+    using script::Type;
+    return type == Type::Int || type == Type::Float || type == Type::Bool || type == Type::String ||
+           type == Type::Vector2 || type == Type::Vector3 || type == Type::Color;
+}
+void liveAccessors(script::ir::Module &module) {
+    using namespace script;
+    using namespace script::ir;
+    for (const auto &global : module.globals) {
+        if (!liveScalar(global.type))
+            continue;
+        Function get;
+        get.name = "__jm_live_get_" + global.name;
+        get.returnType = global.type;
+        get.valueCount = 1;
+        get.valueTypes = {global.type};
+        Instruction load;
+        load.op = Op::GlobalLoad;
+        load.result = 0;
+        load.symbol = global.name;
+        load.type = global.type;
+        BasicBlock block;
+        block.id = 0;
+        block.name = "entry";
+        block.instructions = {load};
+        block.terminator = {Terminator::Kind::Return, 0, 0, 0};
+        get.blocks = {block};
+        module.functions.push_back(get);
+        Function set;
+        set.name = "__jm_live_set_" + global.name;
+        set.returnType = Type::Void;
+        set.parameterCount = 1;
+        set.localCount = 1;
+        set.valueCount = 1;
+        set.parameterTypes = {global.type};
+        set.localTypes = {global.type};
+        set.valueTypes = {global.type};
+        load.op = Op::Load;
+        load.local = 0;
+        load.symbol.clear();
+        Instruction store;
+        store.op = Op::GlobalStore;
+        store.symbol = global.name;
+        store.type = global.type;
+        store.left = 0;
+        block.instructions = {load, store};
+        set.blocks = {block};
+        module.functions.push_back(set);
+    }
+}
+} // namespace
 EngineEventRuntime::EngineEventRuntime(Scene &scene, std::string playerId, script::Program program,
                                        EngineScriptBackend backend)
-    : context_{scene, std::move(playerId), {}, 0.0} {
+    : context_{scene, std::move(playerId), {}, 0.0}, program_(program), backend_(backend) {
+    auto metadata = std::make_shared<script::ir::NativeFunctionRegistry>(engineNativeFunctions());
+    std::vector<script::Diagnostic> errors;
+    if (!script::check(program, errors, metadata.get()))
+        throw std::runtime_error(errors.front().code + ": " + errors.front().message);
     if (backend == EngineScriptBackend::Interpreter) {
         script::RunOptions options;
         options.moduleResolver = engineModuleResolver();
+        options.nativeMetadata = metadata;
         session_ = std::make_unique<script::ExecutionSession>(std::move(program), options,
                                                               engineHostFunctions(context_));
     } else {
@@ -364,12 +481,139 @@ EngineEventRuntime::EngineEventRuntime(Scene &scene, std::string playerId, scrip
         script::ir::LoweringDiagnostic diagnostic;
         if (!script::ir::lower(program, module_, diagnostic, &registry))
             throw std::runtime_error(diagnostic.message);
+        liveAccessors(module_);
         EngineScriptScope scope(context_);
         code_ = backend == EngineScriptBackend::LLVM ? script::ir::LLVMBackend{}.compile(module_, registry)
                                                      : script::ir::X64Backend{}.compile(module_, registry);
     }
 }
+bool EngineEventRuntime::hotSwap(script::Program candidate, script::Diagnostic &diagnostic) {
+    if (std::this_thread::get_id() != ownerThread_ || executing_) {
+        diagnostic = {"JM7201: Hot swap requires the owner thread at an event boundary."};
+        diagnostic.code = "JM7201";
+        return false;
+    }
+    auto metadata = engineNativeFunctions();
+    if (!script::hotSwapCompatible(program_, candidate, diagnostic, &metadata))
+        return false;
+    try {
+        if (session_) {
+            if (!session_->hotSwap(candidate, diagnostic))
+                return false;
+            program_.statements.swap(candidate.statements);
+            ++generation_;
+            return true;
+        }
+        if (backend_ != EngineScriptBackend::LLVM)
+            throw std::runtime_error("JM7202: Bootstrap hot swap is unsupported.");
+        auto registry = engineNativeFunctions();
+        script::ir::Module module;
+        script::ir::LoweringDiagnostic lowering;
+        if (!script::ir::lower(candidate, module, lowering, &registry))
+            throw std::runtime_error(lowering.message);
+        for (const auto &definition : program_.statements)
+            if (definition.kind == script::Statement::Kind::Function) {
+                auto old =
+                    std::find_if(module_.functions.begin(), module_.functions.end(),
+                                 [&](const auto &function) { return function.name == definition.name; });
+                auto next =
+                    std::find_if(module.functions.begin(), module.functions.end(),
+                                 [&](const auto &function) { return function.name == definition.name; });
+                if (old == module_.functions.end() || next == module.functions.end() ||
+                    old->returnType != next->returnType || old->parameterTypes != next->parameterTypes ||
+                    old->returnElementType != next->returnElementType ||
+                    old->parameterElementTypes != next->parameterElementTypes)
+                    throw std::runtime_error("JM7202: Inferred native function signature changed.");
+            }
+        module.functions.erase(std::remove_if(module.functions.begin(), module.functions.end(),
+                                              [](const auto &fn) { return fn.name == "__jm_init"; }),
+                               module.functions.end());
+        liveAccessors(module);
+        auto code = script::ir::LLVMBackend{}.compile(module, registry);
+        EngineScriptScope scope(context_);
+        std::map<std::string, script::Value> state;
+        for (const auto &global : module_.globals) {
+            if (!liveScalar(global.type))
+                throw std::runtime_error("JM7202: Native aggregate global migration is unsupported.");
+            state.emplace(global.name, code_.invokeValue("__jm_live_get_" + global.name));
+        }
+        std::unordered_map<std::string, const script::Statement *> old;
+        for (const auto &item : program_.statements)
+            if (item.kind == script::Statement::Kind::Variable)
+                old[item.name] = &item;
+        for (const auto &item : candidate.statements) {
+            if (item.kind != script::Statement::Kind::Variable)
+                continue;
+            bool changed =
+                !old.contains(item.name) ||
+                !script::structurallyEqual(script::Program{{*old.at(item.name)}}, script::Program{{item}});
+            if (changed) {
+                if (!item.expression || item.expression->kind != script::Expression::Kind::Literal)
+                    throw std::runtime_error("JM7202: Live initializer changes require literals.");
+                state[item.name] = item.expression->literal;
+            }
+        }
+        for (const auto &global : module.globals) {
+            if (!liveScalar(global.type) || !state.contains(global.name))
+                throw std::runtime_error("JM7202: Unsupported native state migration.");
+            auto value = state.at(global.name);
+            if (global.type == script::Type::Float && value.type() == script::Type::Int)
+                value = script::Value(static_cast<double>(std::get<int64_t>(value.data)));
+            if (value.type() != global.type)
+                throw std::runtime_error("JM7202: Native global type changed.");
+            code.invokeValue("__jm_live_set_" + global.name, {value});
+        }
+        // No initializer/event is run in the candidate; Scene and persistent values survive.
+        code_ = std::move(code);
+        module_ = std::move(module);
+        program_.statements.swap(candidate.statements);
+        ++generation_;
+        diagnostic = {};
+        return true;
+    } catch (const std::exception &error) {
+        diagnostic = {error.what()};
+        diagnostic.code = "JM7202";
+        return false;
+    }
+}
+std::map<std::string, std::string> EngineEventRuntime::inspect() {
+    if (std::this_thread::get_id() != ownerThread_ || executing_)
+        throw std::runtime_error("JM7201: Inspection requires an event boundary on the owner thread.");
+    std::map<std::string, std::string> result =
+        session_ ? session_->inspect() : std::map<std::string, std::string>{};
+    for (const auto &global : module_.globals) {
+        if (result.size() >= 64)
+            break;
+        if (global.type == script::Type::String) {
+            result.emplace(global.name, "String: <native string inspection unsupported>");
+            continue;
+        }
+        if (liveScalar(global.type)) {
+            auto value = code_.invokeValue("__jm_live_get_" + global.name);
+            auto text = value.toString();
+            if (text.size() > 256)
+                text.resize(256);
+            result.emplace(global.name, value.typeName() + ": " + text);
+        }
+    }
+    if (auto *player = context_.player()) {
+        result["player.position"] =
+            script::Value(script::Vector2Value{player->position.x, player->position.y}).toString();
+        result["player.velocity"] =
+            script::Value(script::Vector2Value{player->horizontalVelocity, player->verticalVelocity})
+                .toString();
+        result["player.grounded"] = player->grounded ? "true" : "false";
+    }
+    return result;
+}
 void EngineEventRuntime::dispatch(const std::string &event) {
+    if (std::this_thread::get_id() != ownerThread_ || executing_)
+        throw std::runtime_error("JM7201: Event dispatch requires the owner thread and cannot reenter.");
+    struct DispatchGuard {
+        bool &active;
+        DispatchGuard(bool &value) : active(value) { active = true; }
+        ~DispatchGuard() { active = false; }
+    } guard(executing_);
     EngineScriptScope scope(context_);
     if (session_)
         session_->dispatch(event);

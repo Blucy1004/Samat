@@ -1,15 +1,36 @@
 #include "JMEngine/Scene/Scene.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <utility>
 
 namespace jm {
+namespace {
+std::atomic<std::uint64_t> referenceToken{1};
+}
+void Scene::invalidateReferences() { identity_ = referenceToken.fetch_add(1); }
+
+Scene::Scene(const Scene &other)
+    : objects_(other.objects_), nextId_(other.nextId_), selectedId_(other.selectedId_) {
+    invalidateReferences();
+}
+Scene &Scene::operator=(const Scene &other) {
+    if (this != &other) {
+        auto objects = other.objects_;
+        objects_.swap(objects);
+        nextId_ = other.nextId_;
+        selectedId_ = other.selectedId_;
+        invalidateReferences();
+    }
+    return *this;
+}
 
 Scene::Scene() {
-    GameObject& cube = create(ObjectKind::Cube3D);
+    invalidateReferences();
+    GameObject &cube = create(ObjectKind::Cube3D);
     cube.name = "Cube";
     cube.koreanName = "큐브";
-    GameObject& player = create(ObjectKind::Sprite2D);
+    GameObject &player = create(ObjectKind::Sprite2D);
     player.name = "Player";
     player.koreanName = "플레이어";
     player.position = {0.0F, -2.2F, 0.0F};
@@ -19,7 +40,7 @@ Scene::Scene() {
     player.physicsEnabled = true;
     player.layer = 2;
 
-    GameObject& ground = create(ObjectKind::Sprite2D);
+    GameObject &ground = create(ObjectKind::Sprite2D);
     ground.name = "Ground";
     ground.koreanName = "바닥";
     ground.position = {0.0F, -3.25F, 0.0F};
@@ -31,8 +52,9 @@ Scene::Scene() {
     selectFirst(ObjectKind::Sprite2D);
 }
 
-GameObject& Scene::create(ObjectKind kind) {
+GameObject &Scene::create(ObjectKind kind) {
     GameObject object{};
+    object.generation = referenceToken.fetch_add(1);
     object.id = "object-" + std::to_string(nextId_++);
     object.kind = kind;
     object.name = kind == ObjectKind::Cube3D ? "Cube " : "Sprite ";
@@ -64,7 +86,7 @@ void Scene::deleteSelected() {
 }
 
 void Scene::select(std::string_view id) {
-    for (const auto& object : objects_) {
+    for (const auto &object : objects_) {
         if (object.id == id) {
             selectedId_ = object.id;
             return;
@@ -73,7 +95,9 @@ void Scene::select(std::string_view id) {
 }
 
 void Scene::replaceObjects(std::vector<GameObject> objects) {
-    for (GameObject& object : objects) {
+    invalidateReferences();
+    for (GameObject &object : objects) {
+        object.generation = referenceToken.fetch_add(1);
         object.horizontalVelocity = 0.0F;
         object.verticalVelocity = 0.0F;
         object.grounded = false;
@@ -81,7 +105,7 @@ void Scene::replaceObjects(std::vector<GameObject> objects) {
     objects_ = std::move(objects);
     nextId_ = 1;
     selectedId_.clear();
-    for (const GameObject& object : objects_) {
+    for (const GameObject &object : objects_) {
         if (object.id.rfind("object-", 0) == 0) {
             try {
                 nextId_ = std::max<std::uint64_t>(nextId_, std::stoull(object.id.substr(7)) + 1);
@@ -90,13 +114,16 @@ void Scene::replaceObjects(std::vector<GameObject> objects) {
             }
         }
     }
-    if (!objects_.empty()) selectedId_ = objects_.back().id;
+    if (!objects_.empty())
+        selectedId_ = objects_.back().id;
 }
 
 void Scene::stepPhysics2D(float fixedDeltaSeconds) {
-    if (fixedDeltaSeconds <= 0.0F) return;
-    for (GameObject& body : objects_) {
-        if (body.kind != ObjectKind::Sprite2D || !body.physicsEnabled || body.isStatic) continue;
+    if (fixedDeltaSeconds <= 0.0F)
+        return;
+    for (GameObject &body : objects_) {
+        if (body.kind != ObjectKind::Sprite2D || !body.physicsEnabled || body.isStatic)
+            continue;
         const float previousBottom = body.position.y - body.scale.y * 0.5F;
         body.grounded = false;
         body.verticalVelocity -= 20.0F * body.gravityScale * fixedDeltaSeconds;
@@ -104,14 +131,18 @@ void Scene::stepPhysics2D(float fixedDeltaSeconds) {
         body.position.y += body.verticalVelocity * fixedDeltaSeconds;
         const float currentBottom = body.position.y - body.scale.y * 0.5F;
 
-        for (const GameObject& surface : objects_) {
-            if (&surface == &body || surface.kind != ObjectKind::Sprite2D || !surface.physicsEnabled || !surface.isStatic) continue;
+        for (const GameObject &surface : objects_) {
+            if (&surface == &body || surface.kind != ObjectKind::Sprite2D || !surface.physicsEnabled ||
+                !surface.isStatic)
+                continue;
             const float surfaceTop = surface.position.y + surface.scale.y * 0.5F;
-            const bool overlapsX = body.position.x + body.scale.x * 0.5F > surface.position.x - surface.scale.x * 0.5F &&
-                                   body.position.x - body.scale.x * 0.5F < surface.position.x + surface.scale.x * 0.5F;
-            const bool crossedTop = body.verticalVelocity <= 0.0F && currentBottom <= surfaceTop &&
-                                    previousBottom >= surfaceTop;
-            if (!overlapsX || !crossedTop) continue;
+            const bool overlapsX =
+                body.position.x + body.scale.x * 0.5F > surface.position.x - surface.scale.x * 0.5F &&
+                body.position.x - body.scale.x * 0.5F < surface.position.x + surface.scale.x * 0.5F;
+            const bool crossedTop =
+                body.verticalVelocity <= 0.0F && currentBottom <= surfaceTop && previousBottom >= surfaceTop;
+            if (!overlapsX || !crossedTop)
+                continue;
             body.position.y = surfaceTop + body.scale.y * 0.5F;
             body.verticalVelocity = 0.0F;
             body.grounded = true;
@@ -121,7 +152,7 @@ void Scene::stepPhysics2D(float fixedDeltaSeconds) {
 }
 
 void Scene::selectFirst(ObjectKind kind) {
-    for (const auto& object : objects_) {
+    for (const auto &object : objects_) {
         if (object.kind == kind) {
             selectedId_ = object.id;
             return;
@@ -130,16 +161,18 @@ void Scene::selectFirst(ObjectKind kind) {
     selectedId_.clear();
 }
 
-GameObject* Scene::selected() {
-    for (auto& object : objects_) {
-        if (object.id == selectedId_) return &object;
+GameObject *Scene::selected() {
+    for (auto &object : objects_) {
+        if (object.id == selectedId_)
+            return &object;
     }
     return nullptr;
 }
 
-const GameObject* Scene::selected() const {
-    for (const auto& object : objects_) {
-        if (object.id == selectedId_) return &object;
+const GameObject *Scene::selected() const {
+    for (const auto &object : objects_) {
+        if (object.id == selectedId_)
+            return &object;
     }
     return nullptr;
 }

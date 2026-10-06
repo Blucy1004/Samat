@@ -48,7 +48,8 @@ std::string expression(const ExpressionPtr &value) {
     case Expression::Kind::Index:
         return expression(value->left) + "[" + expression(value->right) + "]";
     case Expression::Kind::Member:
-        return expression(value->left) + "." + value->text;
+        return expression(value->left) +
+               (value->text.starts_with('?') ? "?." + value->text.substr(1) : "." + value->text);
     case Expression::Kind::Call: {
         std::string out = expression(value->left) + "(";
         for (std::size_t i = 0; i < value->arguments.size(); ++i) {
@@ -131,29 +132,31 @@ void render(std::ostringstream &out, const StatementList &list, bool korean, std
         case Statement::Kind::Variable:
             if (!item.expression) {
                 if (korean)
-                    out << (item.elementType == Type::Any
+                    out << (item.elementType == Type::Any && item.declaredTypeName.empty()
                                 ? koreanType(item.declaredType)
-                                : annotationName(item.declaredType, item.elementType))
+                                : annotationName(item.declaredType, item.elementType, item.declaredTypeName))
                         << " 변수 " << jm::attachKoreanParticle(item.name, jm::KoreanParticle::Object)
                         << " 선언한다.\n";
                 else {
                     out << "let " << item.name;
                     if (item.declaredType != Type::Any)
-                        out << ": " << annotationName(item.declaredType, item.elementType);
+                        out << ": "
+                            << annotationName(item.declaredType, item.elementType, item.declaredTypeName);
                     out << '\n';
                 }
                 break;
             }
             if (korean)
-                out << (item.elementType == Type::Any ? koreanType(item.declaredType)
-                                                      : annotationName(item.declaredType, item.elementType))
+                out << (item.elementType == Type::Any && item.declaredTypeName.empty()
+                            ? koreanType(item.declaredType)
+                            : annotationName(item.declaredType, item.elementType, item.declaredTypeName))
                     << ' ' << (item.constant ? "상수 " : "변수 ")
                     << jm::attachKoreanParticle(item.name, jm::KoreanParticle::Object) << ' '
                     << expression(item.expression) << "로 정한다.\n";
             else {
                 out << (item.constant ? "const " : "let ") << item.name;
                 if (item.declaredType != Type::Any)
-                    out << ": " << annotationName(item.declaredType, item.elementType);
+                    out << ": " << annotationName(item.declaredType, item.elementType, item.declaredTypeName);
                 out << " = " << expression(item.expression) << '\n';
             }
             break;
@@ -183,7 +186,8 @@ void render(std::ostringstream &out, const StatementList &list, bool korean, std
             for (const auto &field : item.body) {
                 out << std::string((depth + 1) * 4, ' ') << field.name;
                 if (item.kind == Statement::Kind::Struct)
-                    out << ": " << annotationName(field.declaredType, field.elementType);
+                    out << ": "
+                        << annotationName(field.declaredType, field.elementType, field.declaredTypeName);
                 if (field.expression)
                     out << " = " << expression(field.expression);
                 out << '\n';
@@ -197,13 +201,15 @@ void render(std::ostringstream &out, const StatementList &list, bool korean, std
                 out << item.parameters[i];
                 if (i < item.parameterTypes.size() && item.parameterTypes[i] != Type::Any)
                     out << ": "
-                        << annotationName(item.parameterTypes[i], i < item.parameterElementTypes.size()
-                                                                      ? item.parameterElementTypes[i]
-                                                                      : Type::Any);
+                        << annotationName(
+                               item.parameterTypes[i],
+                               i < item.parameterElementTypes.size() ? item.parameterElementTypes[i]
+                                                                     : Type::Any,
+                               i < item.parameterTypeNames.size() ? item.parameterTypeNames[i] : "");
             }
             out << ')';
             if (item.returnType != Type::Any)
-                out << " -> " << annotationName(item.returnType, item.returnElementType);
+                out << " -> " << annotationName(item.returnType, item.returnElementType, item.returnTypeName);
             out << ":\n";
             render(out, item.body, korean, depth + 1);
             break;

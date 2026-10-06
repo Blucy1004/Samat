@@ -3,6 +3,7 @@
 #include "JMEngine/Script/JMIR.hpp"
 #include "JMEngine/Script/LanguageCore.hpp"
 #include "JMEngine/Script/Script.hpp"
+#include <thread>
 
 namespace jm {
 // Engine-owned adapters. The language core does not depend on Scene/physics/input.
@@ -31,13 +32,20 @@ class EngineEventRuntime {
     void start();
     void tick(const ScriptInput &input, double deltaSeconds);
     void dispatch(const std::string &event);
+    bool hotSwap(script::Program candidate, script::Diagnostic &diagnostic);
+    std::uint64_t generation() const { return generation_; }
+    std::map<std::string, std::string> inspect();
 
   private:
     EngineScriptContext context_;
+    script::Program program_;
+    EngineScriptBackend backend_;
+    std::uint64_t generation_{1};
     std::unique_ptr<script::ExecutionSession> session_;
     script::ir::Module module_;
     script::ir::NativeCode code_;
-    bool started_{};
+    bool started_{}, executing_{};
+    std::thread::id ownerThread_{std::this_thread::get_id()};
 };
 std::function<bool(std::string_view)> engineModuleResolver();
 script::HostFunction engineHostFunctions(EngineScriptContext &context);

@@ -1,3 +1,4 @@
+#include "JMEngine/Script/JMIR.hpp"
 #include "JMEngine/Script/LanguageCore.hpp"
 #include "JMEngine/Script/StandardLibrary.hpp"
 #include <algorithm>
@@ -5,18 +6,40 @@
 
 namespace jm::script {
 std::string typeName(Type type) {
-    static const char *names[]{"Any",     "Int",     "Float", "Bool", "String", "Void",  "List", "Map",
-                               "Vector2", "Vector3", "Color", "Enum", "Struct", "Tuple", "Range"};
+    static const char *names[]{"Any",    "Int",   "Float",   "Bool",     "String", "Void",
+                               "List",   "Map",   "Vector2", "Vector3",  "Color",  "Enum",
+                               "Struct", "Tuple", "Range",   "Optional", "Entity", "Null"};
     return names[static_cast<unsigned>(type)];
 }
-std::string annotationName(Type base, Type element) {
+std::string annotationName(Type base, Type element, std::string_view nominal) {
+    if (base == Type::Optional)
+        return (nominal.empty() ? typeName(element) : std::string(nominal)) + "?";
+    if (base == Type::Struct && !nominal.empty())
+        return std::string(nominal);
     return typeName(base) +
            (element == Type::Any ? "" : (base == Type::Map ? "<String, " : "<") + typeName(element) + ">");
 }
 TypeAnnotation parseAnnotation(std::string_view name) {
+    if (name.ends_with('?')) {
+        Type inner;
+        std::string nominal;
+        try {
+            inner = parseType(name.substr(0, name.size() - 1));
+        } catch (const std::runtime_error &) {
+            inner = Type::Struct;
+            nominal = name.substr(0, name.size() - 1);
+        }
+        if (inner == Type::Void || inner == Type::Any || inner == Type::Null || inner == Type::Optional)
+            throw std::runtime_error("JM2010: Optional requires a concrete value type.");
+        return {Type::Optional, inner, nominal};
+    }
     auto less = name.find('<');
     if (less == std::string_view::npos)
-        return {parseType(name), Type::Any};
+        try {
+            return {parseType(name), Type::Any, {}};
+        } catch (const std::runtime_error &) {
+            return {Type::Struct, Type::Any, std::string(name)};
+        }
     if (name.substr(0, less) == "Map") {
         auto comma = name.find(',', less);
         if (!name.ends_with('>') || comma == std::string_view::npos ||
@@ -41,6 +64,8 @@ TypeAnnotation parseAnnotation(std::string_view name) {
     return {base, element};
 }
 Type parseType(std::string_view name) {
+    if (name == "Entity")
+        return Type::Entity;
     if (name == "Int" || name == "i64" || name == "정수")
         return Type::Int;
     if (name == "Float" || name == "f64" || name == "실수")
@@ -98,6 +123,10 @@ Type Value::type() const {
         return Type::Tuple;
     case 14:
         return Type::Range;
+    case 8:
+        return Type::Entity;
+    case 15:
+        return Type::Optional;
     case 9:
         return Type::Int;
     default:
@@ -120,8 +149,11 @@ struct Checker {
     std::vector<std::unordered_map<std::string, Binding>> scopes{1};
     std::unordered_map<std::string, const Statement *> functions, structures;
     std::vector<Diagnostic> &errors;
-    explicit Checker(std::vector<Diagnostic> &diagnostics) : errors(diagnostics) {}
+    const ir::NativeFunctionRegistry *registry{};
+    explicit Checker(std::vector<Diagnostic> &diagnostics, const ir::NativeFunctionRegistry *metadata)
+        : errors(diagnostics), registry(metadata) {}
     std::size_t line{};
+    Type returnElement{Type::Any};
     void error(std::string code, std::string message, Type expected = Type::Any, Type actual = Type::Any) {
         Diagnostic diagnostic{std::move(message), line};
         diagnostic.code = std::move(code);
@@ -140,12 +172,100 @@ struct Checker {
         if (!scopes.back().emplace(name, binding).second)
             error("JM2004", "Duplicate declaration: " + name);
     }
+    bool declared(const std::string &name) const {
+        for (const auto &scope : scopes)
+            if (scope.contains(name))
+                return true;
+        return false;
+    }
+    const ir::NativeFunctionRegistry::Metadata *metadataOf(const ExpressionPtr &value) const {
+        if (!value || !registry)
+            return nullptr;
+        auto member = value->kind == Expression::Kind::Call ? value->left : value;
+        if (member && member->kind == Expression::Kind::Member && member->left &&
+            member->left->kind == Expression::Kind::Identifier && declared(member->left->text))
+            return nullptr;
+        auto symbol = value->builtinSymbolName;
+        if (symbol.empty() && value->kind == Expression::Kind::Call && value->left &&
+            value->left->kind == Expression::Kind::Identifier && !declared(value->left->text))
+            symbol = value->left->text;
+        return symbol.empty() ? nullptr : registry->metadata(stableBuiltinSymbolId(symbol));
+    }
+    const ir::NativeFunctionRegistry::Metadata *entityMetadata(std::string property) const {
+        if (!registry)
+            return nullptr;
+        if (property.starts_with('?'))
+            property.erase(0, 1);
+        return registry->metadata(stableBuiltinSymbolId("builtin.entity." + property));
+    }
+    void nativeArguments(const ir::NativeFunctionRegistry::Metadata &info, const std::vector<Type> &arguments,
+                         const std::vector<Expression::NamedArgument> &values, size_t offset = 0) {
+        if (arguments.size() + offset != info.parameterTypes.size()) {
+            error("JM2003", "Native argument count mismatch: " + info.displayName);
+            return;
+        }
+        for (size_t i = 0; i < arguments.size(); ++i) {
+            auto target = info.parameterTypes[i + offset];
+            auto element = i + offset < info.parameterElementTypes.size()
+                               ? info.parameterElementTypes[i + offset]
+                               : Type::Any;
+            if (!(target == Type::Optional
+                      ? (arguments[i] == Type::Null || accepts(element, arguments[i]) ||
+                         (arguments[i] == Type::Optional && optionalElement(values[i].value) == element))
+                      : accepts(target, arguments[i])))
+                error("JM2003", "Native parameter type mismatch: " + info.parameterNames[i + offset], target,
+                      arguments[i]);
+            if (!values[i].name.empty() && values[i].name != info.parameterNames[i + offset])
+                error("JM2003", "Native named parameter mismatch.");
+        }
+    }
+    Type optionalElement(const ExpressionPtr &value) {
+        if (value && value->kind == Expression::Kind::Identifier)
+            return lookup(value->text).element;
+        if (value && value->kind == Expression::Kind::Call && value->left &&
+            value->left->kind == Expression::Kind::Identifier && functions.contains(value->left->text))
+            return functions.at(value->left->text)->returnElementType;
+        if (auto info = metadataOf(value))
+            return info->returnElementType;
+        if (value && value->kind == Expression::Kind::Member && !value->text.starts_with('?') &&
+            value->left && value->left->kind == Expression::Kind::Identifier &&
+            lookup(value->left->text).structure) {
+            for (const auto &field : lookup(value->left->text).structure->body)
+                if (field.name == value->text)
+                    return field.elementType;
+        }
+        if (value && value->kind == Expression::Kind::Member && value->text.starts_with('?')) {
+            auto element = optionalElement(value->left);
+            return element == Type::Entity
+                       ? entityMetadata(value->text) ? entityMetadata(value->text)->returnType : Type::Any
+                   : element == Type::Vector2 || element == Type::Vector3 || element == Type::Color
+                       ? Type::Float
+                       : Type::Int;
+        }
+        return Type::Any;
+    }
+    void narrow(const ExpressionPtr &condition, bool positive) {
+        if (!condition || condition->kind != Expression::Kind::Binary ||
+            (condition->text != "==" && condition->text != "!="))
+            return;
+        auto variable = condition->left, null = condition->right;
+        if (variable && variable->kind == Expression::Kind::Literal)
+            std::swap(variable, null);
+        if (!variable || variable->kind != Expression::Kind::Identifier || !null ||
+            null->kind != Expression::Kind::Literal || !null->literal.isNull())
+            return;
+        auto binding = lookup(variable->text);
+        if (binding.type == Type::Optional && ((condition->text == "!=") == positive)) {
+            binding.type = binding.element;
+            scopes.back()[variable->text] = binding;
+        }
+    }
     Type expr(const ExpressionPtr &value) {
         if (!value)
             return Type::Void;
         switch (value->kind) {
         case Expression::Kind::Literal:
-            return value->literal.type();
+            return value->literal.isNull() ? Type::Null : value->literal.type();
         case Expression::Kind::Identifier:
             return lookup(value->text).type;
         case Expression::Kind::Tuple:
@@ -176,6 +296,21 @@ struct Checker {
             return container == Type::String ? Type::String : Type::Any;
         }
         case Expression::Kind::Member:
+            if (auto info = metadataOf(value))
+                return info->returnType;
+            if (auto receiver = expr(value->left); receiver == Type::Optional) {
+                if (value->text.starts_with('?')) {
+                    auto element = optionalElement(value->left);
+                    if (element != Type::Entity && element != Type::Vector2 && element != Type::Vector3 &&
+                        element != Type::Color && element != Type::String && element != Type::Struct)
+                        error("JM2010", "This Optional payload has no chainable members.");
+                    return Type::Optional;
+                }
+                error("JM2011", "값이 없을 수도 있어요. 사용 전에 != null로 확인하세요.");
+                return Type::Any;
+            }
+            if (value->text.starts_with('?'))
+                error("JM2010", "?. requires Optional receiver.");
             if (value->left && value->left->kind == Expression::Kind::Identifier &&
                 lookup(value->left->text).structure != nullptr) {
                 auto schema = lookup(value->left->text).structure;
@@ -186,6 +321,13 @@ struct Checker {
                     return Type::Any;
                 }
                 return field->declaredType;
+            }
+            if (expr(value->left) == Type::Entity) {
+                if (auto info = entityMetadata(value->text))
+                    return info->returnType;
+                if (registry)
+                    error("JM2005", "Unknown Entity property: " + value->text);
+                return Type::Any;
             }
             if (auto type = expr(value->left);
                 type == Type::Vector2 || type == Type::Vector3 || type == Type::Color)
@@ -204,6 +346,27 @@ struct Checker {
         case Expression::Kind::Binary: {
             auto left = expr(value->left), right = expr(value->right);
             const auto &op = value->text;
+            if (op == "??") {
+                if (left != Type::Optional || !accepts(optionalElement(value->left), right))
+                    error("JM2010", "?? requires Optional<T> and a compatible fallback.");
+                return optionalElement(value->left);
+            }
+            if ((op == "==" || op == "!=") && (left == Type::Optional || right == Type::Optional) &&
+                left != Type::Null && right != Type::Null) {
+                auto element =
+                    left == Type::Optional ? optionalElement(value->left) : optionalElement(value->right);
+                auto other = left == Type::Optional
+                                 ? (right == Type::Optional ? optionalElement(value->right) : right)
+                                 : left;
+                if (!accepts(element, other) ||
+                    (right == Type::Optional && left == Type::Optional && element != other) ||
+                    element == Type::List || element == Type::Map || element == Type::Tuple ||
+                    element == Type::Range)
+                    error("JM2010", "Unsupported or incompatible Optional equality payload.");
+            }
+            if ((left == Type::Optional || right == Type::Optional) && op != "==" && op != "!=")
+                error("JM2011", "Optional must be checked for null before arithmetic.");
+
             if ((op == "&" || op == "|" || op == "<<" || op == ">>") &&
                 ((left != Type::Int && left != Type::Any) || (right != Type::Int && right != Type::Any)))
                 error("JM2006", "Bitwise operators require Int operands.");
@@ -238,9 +401,30 @@ struct Checker {
             std::vector<Type> arguments;
             for (const auto &item : value->arguments)
                 arguments.push_back(expr(item.value));
+            if (auto info = metadataOf(value)) {
+                nativeArguments(*info, arguments, value->arguments);
+                return info->returnType;
+            }
             if (value->left && value->left->kind == Expression::Kind::Member) {
                 auto receiver = expr(value->left->left);
                 auto method = value->left->text;
+                if (receiver == Type::Optional) {
+                    if (!method.starts_with('?'))
+                        error("JM2011", "오브젝트가 없을 수도 있어요. != null로 확인하거나 ?.를 사용하세요.");
+                    if (optionalElement(value->left->left) == Type::Entity)
+                        if (auto info = entityMetadata(method)) {
+                            nativeArguments(*info, arguments, value->arguments, 1);
+                            return info->returnType == Type::Void ? Type::Void : Type::Optional;
+                        }
+                    return Type::Optional;
+                }
+                if (receiver == Type::Entity) {
+                    if (auto info = entityMetadata(method)) {
+                        nativeArguments(*info, arguments, value->arguments, 1);
+                        return info->returnType;
+                    }
+                    return Type::Any;
+                }
                 if (receiver == Type::Vector2 || receiver == Type::Vector3) {
                     if (method == "normalized" || method == "cross" || method == "lerp")
                         return receiver;
@@ -280,7 +464,12 @@ struct Checker {
                                         std::to_string(arguments.size()) + ".");
                 for (std::size_t i = 0; i < std::min(arguments.size(), fn.parameters.size()); ++i) {
                     Type target = i < fn.parameterTypes.size() ? fn.parameterTypes[i] : Type::Any;
-                    if (!accepts(target, arguments[i]))
+                    if (!(target == Type::Optional ? (arguments[i] == Type::Null ||
+                                                      accepts(fn.parameterElementTypes.at(i), arguments[i]) ||
+                                                      (arguments[i] == Type::Optional &&
+                                                       optionalElement(value->arguments[i].value) ==
+                                                           fn.parameterElementTypes.at(i)))
+                                                   : accepts(target, arguments[i])))
                         error("JM2003",
                               "Parameter '" + fn.parameters[i] + "' requires " + typeName(target) + ".",
                               target, arguments[i]);
@@ -302,7 +491,13 @@ struct Checker {
                     }
                     if (field >= fields.size() || !assigned.insert(field).second)
                         error("JM2003", "Unknown or duplicate struct argument.");
-                    else if (!accepts(fields[field].declaredType, arguments[i]))
+                    else if (!(fields[field].declaredType == Type::Optional
+                                   ? (arguments[i] == Type::Null ||
+                                      accepts(fields[field].elementType, arguments[i]) ||
+                                      (arguments[i] == Type::Optional &&
+                                       optionalElement(value->arguments[i].value) ==
+                                           fields[field].elementType))
+                                   : accepts(fields[field].declaredType, arguments[i])))
                         error("JM2003", "Struct field type mismatch.", fields[field].declaredType,
                               arguments[i]);
                 }
@@ -371,6 +566,10 @@ struct Checker {
     void block(const StatementList &list, Type returnType = Type::Any, int loops = 0, bool function = false) {
         for (const auto &item : list) {
             line = item.line;
+            if (!item.returnTypeName.empty() ||
+                std::any_of(item.parameterTypeNames.begin(), item.parameterTypeNames.end(),
+                            [](const auto &name) { return !name.empty(); }))
+                error("JM2010", "Named Struct function signatures are not yet supported.");
             switch (item.kind) {
             case Statement::Kind::Enum:
             case Statement::Kind::Struct: {
@@ -379,27 +578,51 @@ struct Checker {
                 declare(item.name, {item.kind == Statement::Kind::Enum ? Type::Map : Type::Struct, true});
                 std::unordered_set<std::string> fields;
                 for (const auto &field : item.body) {
+                    if (!field.declaredTypeName.empty())
+                        error("JM2010", "Named/nested Struct fields are not yet supported.");
                     if (!fields.insert(field.name).second)
                         error("JM2004", "Duplicate data field: " + field.name);
                     if (item.kind == Statement::Kind::Struct && field.expression &&
-                        !accepts(field.declaredType, expr(field.expression)))
+                        !(field.declaredType == Type::Optional
+                              ? (expr(field.expression) == Type::Null ||
+                                 accepts(field.elementType, expr(field.expression)))
+                              : accepts(field.declaredType, expr(field.expression))))
                         error("JM2001", "Struct default field type mismatch.");
                 }
                 break;
             }
             case Statement::Kind::Variable: {
                 const Statement *structure = nullptr;
+                if (!item.declaredTypeName.empty()) {
+                    if (!structures.contains(item.declaredTypeName))
+                        error("JM2010", "Unknown named type: " + item.declaredTypeName);
+                    else
+                        structure = structures.at(item.declaredTypeName);
+                }
                 if (item.expression && item.expression->kind == Expression::Kind::Call &&
-                    item.expression->left && structures.contains(item.expression->left->text))
-                    structure = structures.at(item.expression->left->text);
-                if (item.expression && item.expression->kind == Expression::Kind::Identifier)
-                    structure = lookup(item.expression->text).structure;
+                    item.expression->left && structures.contains(item.expression->left->text)) {
+                    auto actualSchema = structures.at(item.expression->left->text);
+                    if (structure && structure != actualSchema)
+                        error("JM2010", "Named Struct assignment mismatch.");
+                    structure = actualSchema;
+                }
+                if (item.expression && item.expression->kind == Expression::Kind::Identifier) {
+                    auto actualSchema = lookup(item.expression->text).structure;
+                    if (structure && actualSchema && structure != actualSchema)
+                        error("JM2010", "Named Struct alias mismatch.");
+                    if (!structure)
+                        structure = actualSchema;
+                }
                 auto actual = item.expression ? expr(item.expression) : Type::Any;
                 if (actual == Type::Void && item.declaredType == Type::Any)
                     actual = Type::Any;
                 if (item.declaredType == Type::Void)
                     error("JM2001", "Variables cannot have type Void.");
-                if (item.expression && !accepts(item.declaredType, actual))
+                if (item.expression && !(item.declaredType == Type::Optional
+                                             ? (actual == Type::Null || accepts(item.elementType, actual) ||
+                                                (actual == Type::Optional &&
+                                                 optionalElement(item.expression) == item.elementType))
+                                             : accepts(item.declaredType, actual)))
                     error("JM2001",
                           "Variable '" + item.name + "' requires " + typeName(item.declaredType) + ", got " +
                               typeName(actual) + ".",
@@ -410,7 +633,10 @@ struct Checker {
                         if (!accepts(item.elementType, expr(value)))
                             error("JM2001", "Typed List element mismatch.", item.elementType, expr(value));
                 declare(item.name, {item.declaredType == Type::Any ? actual : item.declaredType,
-                                    item.constant, structure});
+                                    item.constant, structure,
+                                    item.declaredType == Type::Optional ? item.elementType
+                                    : actual == Type::Optional          ? optionalElement(item.expression)
+                                                                        : item.elementType});
                 break;
             }
             case Statement::Kind::Assignment: {
@@ -422,7 +648,23 @@ struct Checker {
                 if (item.target && item.target->kind == Expression::Kind::Identifier &&
                     lookup(item.target->text).constant)
                     error("JM2007", "Cannot modify constant '" + item.target->text + "'.");
-                if (!accepts(target, actual))
+                auto binding = item.target && item.target->kind == Expression::Kind::Identifier
+                                   ? lookup(item.target->text)
+                                   : Binding{target, false, nullptr, optionalElement(item.target)};
+                if (binding.structure && item.expression) {
+                    const Statement *actualSchema = nullptr;
+                    if (item.expression->kind == Expression::Kind::Identifier)
+                        actualSchema = lookup(item.expression->text).structure;
+                    if (item.expression->kind == Expression::Kind::Call && item.expression->left &&
+                        structures.contains(item.expression->left->text))
+                        actualSchema = structures.at(item.expression->left->text);
+                    if (actualSchema && actualSchema != binding.structure)
+                        error("JM2010", "Named Struct assignment mismatch.");
+                }
+                if (!(target == Type::Optional ? (actual == Type::Null || accepts(binding.element, actual) ||
+                                                  (actual == Type::Optional &&
+                                                   optionalElement(item.expression) == binding.element))
+                                               : accepts(target, actual)))
                     error("JM2001", "Assignment type mismatch.", target, actual);
                 break;
             }
@@ -432,7 +674,11 @@ struct Checker {
             case Statement::Kind::Return:
                 if (!function)
                     error("JM2009", "return requires a function.");
-                if (auto actual = expr(item.expression); !accepts(returnType, actual))
+                if (auto actual = expr(item.expression);
+                    !(returnType == Type::Optional
+                          ? (actual == Type::Null || accepts(returnElement, actual) ||
+                             (actual == Type::Optional && optionalElement(item.expression) == returnElement))
+                          : accepts(returnType, actual)))
                     error("JM2002", "Return type mismatch.", returnType, actual);
                 break;
             case Statement::Kind::Break:
@@ -455,10 +701,15 @@ struct Checker {
                 for (std::size_t i = 0; i < item.parameters.size(); ++i) {
                     if (i < item.parameterTypes.size() && item.parameterTypes[i] == Type::Void)
                         error("JM2003", "Function parameters cannot have type Void.");
-                    declare(item.parameters[i],
-                            {i < item.parameterTypes.size() ? item.parameterTypes[i] : Type::Any, false});
+                    declare(
+                        item.parameters[i],
+                        {i < item.parameterTypes.size() ? item.parameterTypes[i] : Type::Any, false, nullptr,
+                         i < item.parameterElementTypes.size() ? item.parameterElementTypes[i] : Type::Any});
                 }
+                auto previousReturnElement = returnElement;
+                returnElement = item.returnElementType;
                 block(item.body, item.returnType, 0, true);
+                returnElement = previousReturnElement;
                 scopes.pop_back();
                 if (item.returnType != Type::Any && item.returnType != Type::Void && !returns(item.body))
                     error("JM2002", "Function '" + item.name + "' can finish without returning " +
@@ -479,11 +730,17 @@ struct Checker {
                 if (item.kind == Statement::Kind::ForRange || item.kind == Statement::Kind::ForEach)
                     declare(item.name,
                             {item.kind == Statement::Kind::ForRange ? Type::Int : Type::Any, false});
+                if (item.kind == Statement::Kind::If)
+                    narrow(item.expression, true);
                 block(item.body, returnType, loops + (item.kind != Statement::Kind::If), function);
                 scopes.pop_back();
                 scopes.emplace_back();
+                if (item.kind == Statement::Kind::If)
+                    narrow(item.expression, false);
                 block(item.alternative, returnType, loops, function);
                 scopes.pop_back();
+                if (item.kind == Statement::Kind::If && returns(item.body) && item.alternative.empty())
+                    narrow(item.expression, false);
                 break;
             }
             case Statement::Kind::Import:
@@ -497,9 +754,10 @@ struct Checker {
     }
 };
 } // namespace
-bool check(const Program &program, std::vector<Diagnostic> &diagnostics) {
+bool check(const Program &program, std::vector<Diagnostic> &diagnostics,
+           const ir::NativeFunctionRegistry *registry) {
     diagnostics.clear();
-    Checker checker(diagnostics);
+    Checker checker(diagnostics, registry);
     for (const auto &statement : program.statements)
         if (statement.kind == Statement::Kind::Function) {
             checker.line = statement.line;

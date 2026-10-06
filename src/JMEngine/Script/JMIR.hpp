@@ -152,6 +152,17 @@ class NativeBackend {
 
 class NativeFunctionRegistry {
   public:
+    struct ParameterEditor {
+        std::string label, unit;
+        double initial{}, minimum{}, maximum{}, recommendedMinimum{}, recommendedMaximum{}, step{1.0};
+        bool numeric{};
+        std::vector<std::pair<std::string, double>> presets;
+    };
+    struct Tooling {
+        std::string category, beginnerName, codeTemplate;
+        bool advanced{};
+        std::vector<ParameterEditor> parameters;
+    };
     struct Metadata {
         std::string symbol, displayName, koreanName, documentation;
         std::vector<std::string> parameterNames;
@@ -159,6 +170,7 @@ class NativeFunctionRegistry {
         Type returnType{Type::Int};
         std::vector<Type> parameterElementTypes;
         Type returnElementType{Type::Any};
+        Tooling tooling{};
     };
     using TypedFunction = std::function<Value(const std::vector<Value> &)>;
     struct TypedBinding {
@@ -182,6 +194,11 @@ class NativeFunctionRegistry {
     std::unordered_set<std::string> modules_;
     std::unordered_map<std::uint64_t, std::shared_ptr<TypedBinding>> typed_;
 };
+
+bool metadataMatches(const NativeFunctionRegistry::Metadata &metadata, std::string_view query);
+std::string metadataSignature(const NativeFunctionRegistry::Metadata &metadata);
+std::string metadataTemplate(const NativeFunctionRegistry::Metadata &metadata, bool korean = false);
+void prepareToolingMetadata(NativeFunctionRegistry::Metadata &metadata);
 
 // Optional consumer of JM IR. Builds without LLVM retain all other backends.
 class LLVMBackend final : public NativeBackend {

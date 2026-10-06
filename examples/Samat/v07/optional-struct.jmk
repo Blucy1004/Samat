@@ -1,0 +1,7 @@
+자료형 Stats:
+    health: Int?
+함수 main() -> Int:
+    Stats? 변수 state를 Stats(health: 42)로 정한다.
+    (state == null)라면:
+        0를 반환한다.
+    (state.health ?? 0)를 반환한다.

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(JMEngine VERSION 0.6.0 LANGUAGES C CXX)
+project(JMEngine VERSION 0.7.0 LANGUAGES C CXX)
 
 option(JMENGINE_BUILD_ENGINE "Build the SDL/OpenGL engine and editor" ON)
 option(JMENGINE_BUILD_SANDBOX "Build the JM Engine sandbox application" ON)
@@ -21,6 +21,7 @@ add_library(Samat_core
     src/JMEngine/Script/TypeChecker.cpp
     src/JMEngine/Script/StandardLibrary.cpp
     src/JMEngine/Script/SurfaceRenderer.cpp
+    src/JMEngine/Script/LanguageMetadata.cpp
     src/JMEngine/Script/JMIR.cpp
     src/JMEngine/Script/IRVerifier.cpp
     src/JMEngine/Script/LLVMBackend.cpp
@@ -188,6 +189,15 @@ if(BUILD_TESTING)
         target_compile_definitions(Samat_native_data_tests PRIVATE JMENGINE_HAS_ENGINE=0)
     endif()
     add_test(NAME Samat_native_data_regression COMMAND Samat_native_data_tests)
+    add_executable(Samat_safe_live_tests tests/SafeLiveRegression.cpp)
+    if(JMENGINE_BUILD_ENGINE)
+        target_link_libraries(Samat_safe_live_tests PRIVATE JMEngine::JMEngine)
+        target_compile_definitions(Samat_safe_live_tests PRIVATE JMENGINE_HAS_ENGINE=1)
+    else()
+        target_link_libraries(Samat_safe_live_tests PRIVATE Samat::Core)
+        target_compile_definitions(Samat_safe_live_tests PRIVATE JMENGINE_HAS_ENGINE=0)
+    endif()
+    add_test(NAME Samat_safe_live_regression COMMAND Samat_safe_live_tests)
     add_executable(Samat_runtime_memory tests/RuntimeMemory.cpp)
     target_link_libraries(Samat_runtime_memory PRIVATE Samat::Core)
     if(MSVC)

@@ -3,9 +3,9 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Version 2: opaque handles, fixed-width scalars, UTF-8 bytes; no C++ ABI exposed.
+/* Version 3: opaque handles, fixed-width scalars, UTF-8 bytes; no C++ ABI exposed.
    Handle lifetime is the owning runtime context. Handles must not cross contexts. */
-#define JM_RUNTIME_ABI_VERSION 2u
+#define JM_RUNTIME_ABI_VERSION 3u
 uint64_t jm_runtime_abi_version(void);
 void jm_runtime_require_abi(uint64_t version);
 typedef uint64_t JMHandle;
@@ -23,7 +23,9 @@ enum JMRuntimeType {
     JM_RT_COLOR = 10,
     JM_RT_STRUCT = 12,
     JM_RT_TUPLE = 13,
-    JM_RT_RANGE = 14
+    JM_RT_RANGE = 14,
+    JM_RT_OPTIONAL = 15,
+    JM_RT_ENTITY = 16
 };
 enum JMRuntimeOperation {
     JM_RT_CONCAT = 1,
@@ -112,7 +114,12 @@ enum JMRuntimeOperation {
     JM_RT_RANGE_CREATE,
     JM_RT_RANGE_LENGTH,
     JM_RT_RANGE_GET,
-    JM_RT_RANGE_FIELD
+    JM_RT_RANGE_FIELD,
+    JM_RT_OPTIONAL_NONE,
+    JM_RT_OPTIONAL_SOME,
+    JM_RT_OPTIONAL_HAS,
+    JM_RT_OPTIONAL_GET,
+    JM_RT_OPTIONAL_EQUAL
 };
 void *jm_runtime_create_context(void);
 void jm_runtime_destroy_context(void *context);

@@ -1,0 +1,5 @@
+가져온다 jm.game
+시작할 때:
+    Entity? 변수 enemy를 scene.find("Player")로 정한다.
+    (enemy != null)라면:
+        enemy.position를 Vector2(1.0, 0.0)만큼 늘린다.

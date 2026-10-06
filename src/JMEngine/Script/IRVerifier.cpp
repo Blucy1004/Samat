@@ -185,12 +185,13 @@ bool verify(const Module &module, LoweringDiagnostic &diagnostic) {
                         require(fn.valueTypes[in.left] == Type::Int && in.type == Type::Float,
                                 "Invalid numeric conversion.");
                     if (in.op == Op::Constant)
-                        require(in.type == Type::Int || in.type == Type::Bool,
+                        require(in.type == Type::Int || in.type == Type::Bool ||
+                                    (in.type == Type::Null && in.immediate == 0),
                                 "Invalid integer constant type.");
                     if (in.op == Op::StringConstant)
                         require(in.type == Type::String, "Invalid string constant type.");
                     if (in.op == Op::RuntimeCall) {
-                        require(in.immediate >= JM_RT_CONCAT && in.immediate <= JM_RT_RANGE_FIELD,
+                        require(in.immediate >= JM_RT_CONCAT && in.immediate <= JM_RT_OPTIONAL_EQUAL,
                                 "Invalid runtime operation.");
                         auto op = in.immediate;
                         size_t count = 1;
@@ -211,7 +212,11 @@ bool verify(const Module &module, LoweringDiagnostic &diagnostic) {
                                 : op == JM_RT_LERP || op == JM_RT_SMOOTHSTEP                             ? 3
                                 : op == JM_RT_RANDOM || op == JM_RT_TIME_NOW || op == JM_RT_TIME_ELAPSED ? 0
                                                                                                          : 1;
-                        if (op >= JM_RT_RANGE_CREATE)
+                        if (op >= JM_RT_OPTIONAL_NONE)
+                            count = op == JM_RT_OPTIONAL_EQUAL                              ? 3
+                                    : op == JM_RT_OPTIONAL_SOME || op == JM_RT_OPTIONAL_GET ? 2
+                                                                                            : 1;
+                        else if (op >= JM_RT_RANGE_CREATE)
                             count = op == JM_RT_RANGE_CREATE ? 3 : op == JM_RT_RANGE_LENGTH ? 1 : 2;
                         else if (op >= JM_RT_MAP_CREATE)
                             count =
@@ -297,7 +302,41 @@ bool verify(const Module &module, LoweringDiagnostic &diagnostic) {
                                                                          : Type::Float),
                                     "Runtime numeric result mismatch.");
                         }
-                        if (op >= JM_RT_RANGE_CREATE) {
+                        if (op >= JM_RT_OPTIONAL_NONE) {
+                            if (op == JM_RT_OPTIONAL_EQUAL) {
+                                require(arg(0) == Type::Optional && arg(1) == Type::Optional &&
+                                            arg(2) == Type::Int && in.type == Type::Bool &&
+                                            fn.valueElementTypes.contains(in.arguments[0]) &&
+                                            fn.valueElementTypes.contains(in.arguments[1]),
+                                        "Invalid Optional equality.");
+                                auto element = fn.valueElementTypes.at(in.arguments[0]);
+                                require(element == fn.valueElementTypes.at(in.arguments[1]) &&
+                                            constant(2) == static_cast<int64_t>(element),
+                                        "Optional equality payload mismatch.");
+                            } else if (op == JM_RT_OPTIONAL_NONE || op == JM_RT_OPTIONAL_SOME) {
+                                require(in.type == Type::Optional && arg(0) == Type::Int &&
+                                            fn.valueElementTypes.contains(in.result),
+                                        "Invalid Optional construction.");
+                                auto element = fn.valueElementTypes.at(in.result);
+                                require(constant(0) == static_cast<int64_t>(element) &&
+                                            element != Type::Any && element != Type::Void &&
+                                            element != Type::Optional && element != Type::Null,
+                                        "Optional payload descriptor mismatch.");
+                                if (op == JM_RT_OPTIONAL_SOME)
+                                    require(arg(1) == element, "Optional payload type mismatch.");
+                            } else {
+                                require(arg(0) == Type::Optional &&
+                                            fn.valueElementTypes.contains(in.arguments[0]),
+                                        "Invalid Optional receiver.");
+                                if (op == JM_RT_OPTIONAL_HAS)
+                                    require(in.type == Type::Bool, "Invalid Optional presence result.");
+                                else
+                                    require(arg(1) == Type::Int &&
+                                                constant(1) == static_cast<int64_t>(in.type) &&
+                                                in.type == fn.valueElementTypes.at(in.arguments[0]),
+                                            "Invalid Optional unwrap type.");
+                            }
+                        } else if (op >= JM_RT_RANGE_CREATE) {
                             if (op == JM_RT_RANGE_CREATE)
                                 require(arg(0) == Type::Int && arg(1) == Type::Int && arg(2) == Type::Int &&
                                             in.type == Type::Range,

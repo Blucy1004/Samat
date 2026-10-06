@@ -2,9 +2,9 @@
 
 JM Engine is a lightweight C++20 engine project for building both 2D and 3D games. It uses SDL3 for the window and input, and OpenGL 3.3 for rendering. The goal is a small, focused engine that grows feature by feature, rather than a full production editor from day one.
 
-## Samat / 訓C正音 v0.6 development milestone
+## Samat / 訓C正音 v0.7 — Safe & Live (partial milestone)
 
-The native data update extends LLVM JIT/Linux AOT with Struct fields, Vector2/3, Color, Tuple, stepped Range and typed String-key Map execution. Typed List/Vector callbacks connect actual Scene properties to persistent engine events. Interpreter, bootstrap x64, optional LLVM and independent core builds remain. See [v0.6 implementation, validation and capability matrix](docs/Samat-v0.6.md); [v0.5+](docs/Samat-v0.5-plus.md) is the preceding checkpoint.
+Optional values, validated Entity references and compatible live program generations now share the Code/Korean AST and runtime. Invalid live candidates retain the previous generation and compatible state. Engine API metadata drives search, templates, help and numeric presets. See [v0.7 implementation, validation and capability matrix](docs/Samat-v0.7.md) for the tested subset and explicit limits; [v0.6](docs/Samat-v0.6.md) is the preceding checkpoint.
 
 ## Engine editor vertical slice
 

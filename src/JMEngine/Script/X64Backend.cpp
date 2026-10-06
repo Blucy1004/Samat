@@ -447,6 +447,7 @@ Value NativeCode::invokeValue(const std::string &function, const std::vector<Val
     return Value(result);
 }
 void NativeFunctionRegistry::registerFunction(Metadata info, Function function) {
+    prepareToolingMetadata(info);
     if (info.parameterTypes.size() != info.parameterNames.size() || info.parameterTypes.size() > 4)
         throw std::runtime_error("Invalid native registry parameter metadata.");
     if (info.returnType != Type::Int && info.returnType != Type::Bool && info.returnType != Type::Void)
@@ -596,17 +597,20 @@ NativeCode X64Backend::compile(const Module &module, const NativeFunctionRegistr
 
 namespace jm::script::ir {
 void NativeFunctionRegistry::registerTypedFunction(Metadata info, TypedFunction function) {
+    prepareToolingMetadata(info);
     if (!function || info.parameterNames.size() != info.parameterTypes.size() ||
         info.parameterTypes.size() > 4)
         throw std::runtime_error("Invalid typed FFI metadata/function.");
     for (auto type : info.parameterTypes)
         if (type != Type::Int && type != Type::Float && type != Type::Bool && type != Type::String &&
-            type != Type::Vector2 && type != Type::Vector3 && type != Type::Color && type != Type::List)
+            type != Type::Vector2 && type != Type::Vector3 && type != Type::Color && type != Type::List &&
+            type != Type::Entity && type != Type::Optional)
             throw std::runtime_error("Typed FFI currently accepts Int/Float/Bool/String.");
     if (info.returnType != Type::Int && info.returnType != Type::Float && info.returnType != Type::Bool &&
         info.returnType != Type::String && info.returnType != Type::Void &&
         info.returnType != Type::Vector2 && info.returnType != Type::Vector3 &&
-        info.returnType != Type::Color && info.returnType != Type::List)
+        info.returnType != Type::Color && info.returnType != Type::List && info.returnType != Type::Entity &&
+        info.returnType != Type::Optional)
         throw std::runtime_error("Typed FFI return type is unsupported.");
     for (size_t i = 0; i < info.parameterTypes.size(); ++i)
         if (info.parameterTypes[i] == Type::List &&
@@ -618,6 +622,16 @@ void NativeFunctionRegistry::registerTypedFunction(Metadata info, TypedFunction 
         info.returnElementType != Type::Float && info.returnElementType != Type::Bool &&
         info.returnElementType != Type::String)
         throw std::runtime_error("List FFI return needs concrete primitive element metadata.");
+    auto optionalPayload = [](Type type) {
+        return type == Type::Int || type == Type::Float || type == Type::Bool || type == Type::String ||
+               type == Type::Vector2 || type == Type::Vector3 || type == Type::Color || type == Type::Entity;
+    };
+    if (info.returnType == Type::Optional && !optionalPayload(info.returnElementType))
+        throw std::runtime_error("JM7001: Optional FFI requires supported payload metadata.");
+    for (size_t i = 0; i < info.parameterTypes.size(); ++i)
+        if (info.parameterTypes[i] == Type::Optional &&
+            (i >= info.parameterElementTypes.size() || !optionalPayload(info.parameterElementTypes[i])))
+            throw std::runtime_error("JM7001: Optional FFI parameter metadata missing.");
     auto id = stableBuiltinSymbolId(info.symbol);
     if (metadata_.contains(id) || functions_.contains(id) || typed_.contains(id))
         throw std::runtime_error("Duplicate native symbol: " + info.symbol);

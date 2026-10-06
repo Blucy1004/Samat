@@ -208,7 +208,7 @@ void sessions() {
 #if JMENGINE_HAS_ENGINE
     auto sceneProgram = parse(
         "import jm.game\nlet created: String = \"\"\non start:\n    created = scene.createSprite(name: "
-        "\"Extra\")\n    if scene.find(name: \"Extra\") == created:\n        scene.destroy(id: created)\non "
+        "\"Extra\")\n    if scene.findId(name: \"Extra\") == created:\n        scene.destroy(id: created)\non "
         "update:\n    if input.isHeld(key: \"right\"):\n        transform.setPosition(x: 5.5, y: 3.5)\n      "
         "  physics.setVelocityY(velocity: 1.5)\n        physics.applyImpulseY(impulse: 2.0)\n");
     for (auto backend : {jm::EngineScriptBackend::Interpreter, jm::EngineScriptBackend::LLVM}) {

@@ -158,7 +158,7 @@ int main(int argc, char **argv) {
                 return 0;
             }
             if (arg == "--version") {
-                std::cout << "Samat / 訓C正音 0.6.0 (LLVM "
+                std::cout << "Samat / 訓C正音 0.7.0 (LLVM "
                           << (ir::LLVMBackend::available() ? "enabled" : "unavailable") << ")\n";
                 return 0;
             }

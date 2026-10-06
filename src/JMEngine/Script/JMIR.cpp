@@ -270,7 +270,7 @@ struct Lowerer {
         in.arguments = std::move(arguments);
         in.type = type;
         auto result = emit(in);
-        if (type == Type::List || type == Type::Map)
+        if (type == Type::List || type == Type::Map || type == Type::Optional)
             elements[result] = element;
         return result;
     }
@@ -284,6 +284,13 @@ struct Lowerer {
         const auto actual = function.valueTypes.at(value);
         if (actual == target)
             return value;
+        if (actual == Type::Optional) {
+            auto payload = runtime(JM_RT_OPTIONAL_GET, {value, integer(static_cast<int>(elementOf(value)))},
+                                   elementOf(value));
+            if (valueStructures.contains(value))
+                valueStructures[payload] = valueStructures.at(value);
+            return convert(payload, target);
+        }
         if (actual == Type::Int && target == Type::Bool) {
             Instruction in;
             in.op = Op::ToBoolean;
@@ -327,9 +334,12 @@ struct Lowerer {
             else
                 throw std::runtime_error("JM6002: Unknown Struct layout.");
         }
+        if (in.type == Type::Optional && localStructures.contains(in.local))
+            valueStructures[result] = localStructures.at(in.local);
         if (in.type == Type::Tuple && localTuples.contains(in.local))
             tuples[result] = localTuples.at(in.local);
-        if ((in.type == Type::List || in.type == Type::Map) && localElements.contains(in.local))
+        if ((in.type == Type::List || in.type == Type::Map || in.type == Type::Optional) &&
+            localElements.contains(in.local))
             elements[result] = localElements[in.local];
         return result;
     }
@@ -349,12 +359,17 @@ struct Lowerer {
                 throw std::runtime_error("Cannot modify global constant '" + name + "'.");
         } else
             throw std::runtime_error("Unknown assignment variable '" + name + "'.");
-        in.left = convert(value, in.type);
-        if (in.type == Type::List || in.type == Type::Map) {
-            auto element = elementOf(value);
+        in.left =
+            in.type == Type::Optional ? optional(value, localElements.at(in.local)) : convert(value, in.type);
+        if (in.type == Type::List || in.type == Type::Map || in.type == Type::Optional) {
+            auto element = elementOf(in.left);
             if (localElements.contains(in.local) && localElements[in.local] != element)
                 throw std::runtime_error("List assignment changes its native element type.");
             localElements[in.local] = element;
+            if (in.type == Type::Optional && element == Type::Struct && valueStructures.contains(in.left) &&
+                localStructures.contains(in.local) &&
+                valueStructures.at(in.left) != localStructures.at(in.local))
+                throw std::runtime_error("JM2010: Optional Struct layout mismatch.");
         }
         if (in.type == Type::Struct) {
             if (!valueStructures.contains(value))
@@ -377,7 +392,27 @@ struct Lowerer {
         }
         at(current).instructions.push_back(in);
     }
+    ValueId optional(ValueId value, Type element) {
+        auto actual = function.valueTypes.at(value);
+        if (actual == Type::Optional) {
+            if (elementOf(value) != element)
+                throw std::runtime_error("JM2010: Optional payload mismatch.");
+            return value;
+        }
+        if (actual == Type::Null)
+            return runtime(JM_RT_OPTIONAL_NONE, {integer(static_cast<int>(element))}, Type::Optional,
+                           element);
+        auto result =
+            runtime(JM_RT_OPTIONAL_SOME, {integer(static_cast<int>(element)), convert(value, element)},
+                    Type::Optional, element);
+        if (valueStructures.contains(value))
+            valueStructures[result] = valueStructures.at(value);
+        return result;
+    }
     ValueId defaultValue(Type type, Type element = Type::Any) {
+        if (type == Type::Optional)
+            return runtime(JM_RT_OPTIONAL_NONE, {integer(static_cast<int>(element))}, Type::Optional,
+                           element);
         if (type == Type::Map && element == Type::Any)
             throw std::runtime_error("JM6002: Native Map requires explicit value type metadata.");
         if (type == Type::Map)
@@ -410,11 +445,80 @@ struct Lowerer {
                            Type::List, element == Type::Any ? Type::Int : element);
         return convert(integer(0), type == Type::Void ? Type::Int : type);
     }
+    ValueId entityCall(const std::string &property, ValueId receiver, Type result) {
+        Instruction in;
+        in.op = Op::Call;
+        in.symbol = "builtin.entity." + property;
+        in.symbolId = stableBuiltinSymbolId(in.symbol);
+        in.arguments = {receiver};
+        in.type = result;
+        return emit(in);
+    }
+    ValueId chained(ValueId receiver, const std::string &property, bool call = false) {
+        if (function.valueTypes[receiver] != Type::Optional)
+            throw std::runtime_error("JM2010: ?. requires Optional.");
+        auto element = elementOf(receiver);
+        Type resultType = element == Type::Struct && valueStructures.contains(receiver)
+                              ? valueStructures.at(receiver)
+                                    ->body.at(fieldIndex(*valueStructures.at(receiver), property))
+                                    .declaredType
+                          : element == Type::Entity ? property == "position" ? Type::Vector2
+                                                      : property == "id"     ? Type::String
+                                                                             : Type::Void
+                          : element == Type::String ? Type::Int
+                                                    : Type::Float;
+        if ((element == Type::Entity && property != "position" && property != "id" &&
+             property != "destroy") ||
+            (element == Type::String && property != "length") ||
+            (aggregateType(element) && property != "x" && property != "y" && property != "z" &&
+             property != "length"))
+            throw std::runtime_error("JM6002: Unsupported optional chain member.");
+        if (resultType == Type::Void && (!call || property != "destroy"))
+            throw std::runtime_error("JM6002: Unsupported optional chain call.");
+        auto name = "$chain" + std::to_string(nextValue);
+        auto slot = declare(name, Type::Optional);
+        localElements[slot] = resultType;
+        auto some = block("chain.some"), none = block("chain.none"), end = block("chain.end");
+        auto has = runtime(JM_RT_OPTIONAL_HAS, {receiver}, Type::Bool);
+        at(current).terminator = {Terminator::Kind::ConditionalBranch, has, some, none};
+        select(some);
+        auto payload = convert(receiver, element);
+        ValueId result;
+        if (element == Type::Struct && valueStructures.contains(receiver))
+            result = recordGet(payload, fieldIndex(*valueStructures.at(receiver), property), resultType);
+        else if (element == Type::Entity)
+            result = entityCall(property, payload, resultType);
+        else if (element == Type::String)
+            result =
+                runtime(JM_RT_LENGTH, {payload, integer(0), integer(static_cast<int>(element))}, Type::Int);
+        else
+            result = property == "length" ? runtime(JM_RT_VECTOR_LENGTH, {payload}, Type::Float)
+                                          : runtime(JM_RT_FIELD_GET,
+                                                    {payload, integer(property == "x"   ? 0
+                                                                      : property == "y" ? 1
+                                                                                        : 2)},
+                                                    Type::Float);
+        if (resultType != Type::Void)
+            store(name, optional(result, resultType));
+        at(current).terminator = {Terminator::Kind::Branch, 0, end, 0};
+        select(none);
+        if (resultType != Type::Void)
+            store(name, defaultValue(Type::Optional, resultType));
+        at(current).terminator = {Terminator::Kind::Branch, 0, end, 0};
+        select(end);
+        return resultType == Type::Void ? integer(0) : load(name);
+    }
     ValueId expression(const ExpressionPtr &value, Type expectedElement = Type::Any) {
         if (!value)
             return integer(0);
         switch (value->kind) {
         case Expression::Kind::Literal:
+            if (value->literal.isNull()) {
+                Instruction in;
+                in.op = Op::Constant;
+                in.type = Type::Null;
+                return emit(in);
+            }
             if (const auto *literalInt = std::get_if<std::int64_t>(&value->literal.data))
                 return integer(*literalInt);
             if (const auto *number = std::get_if<double>(&value->literal.data)) {
@@ -537,7 +641,9 @@ struct Lowerer {
         case Expression::Kind::Identifier:
             return load(value->text);
         case Expression::Kind::Unary: {
-            const ValueId operand = expression(value->right);
+            auto operand = expression(value->right);
+            if (function.valueTypes[operand] == Type::Optional)
+                operand = convert(operand, elementOf(operand));
             Instruction instruction;
             instruction.op = value->text == "~"   ? Op::BitNot
                              : value->text == "-" ? Op::Negate
@@ -552,6 +658,13 @@ struct Lowerer {
             return emit(std::move(instruction));
         }
         case Expression::Kind::Binary: {
+            if ((value->text == "==" || value->text == "!=") &&
+                value->left->kind == Expression::Kind::Literal && value->left->literal.isNull() &&
+                !(value->right->kind == Expression::Kind::Literal && value->right->literal.isNull())) {
+                auto normalized = std::make_shared<Expression>(*value);
+                std::swap(normalized->left, normalized->right);
+                return expression(normalized);
+            }
             if (value->text == "**" || value->text == "^") {
                 auto call = std::make_shared<Expression>();
                 call->kind = Expression::Kind::Call;
@@ -561,7 +674,44 @@ struct Lowerer {
                 call->arguments = {{"", value->left}, {"", value->right}};
                 return expression(call);
             }
-            const ValueId left = expression(value->left);
+            auto left = expression(value->left);
+            if (value->text == "??") {
+                if (function.valueTypes[left] != Type::Optional)
+                    throw std::runtime_error("JM2010: ?? requires Optional.");
+                auto element = elementOf(left);
+                auto name = "$coalesce" + std::to_string(nextValue);
+                declare(name, element);
+                auto some = block("optional.some"), none = block("optional.none"),
+                     end = block("optional.end");
+                auto has = runtime(JM_RT_OPTIONAL_HAS, {left}, Type::Bool);
+                at(current).terminator = {Terminator::Kind::ConditionalBranch, has, some, none};
+                select(some);
+                store(name, runtime(JM_RT_OPTIONAL_GET, {left, integer(static_cast<int>(element))}, element));
+                at(current).terminator = {Terminator::Kind::Branch, 0, end, 0};
+                select(none);
+                store(name, convert(expression(value->right), element));
+                at(current).terminator = {Terminator::Kind::Branch, 0, end, 0};
+                select(end);
+                return load(name);
+            }
+            if ((value->text == "==" || value->text == "!=") &&
+                value->right->kind == Expression::Kind::Literal && value->right->literal.isNull()) {
+                if (function.valueTypes[left] != Type::Optional) {
+                    Instruction result;
+                    result.op = Op::Constant;
+                    result.type = Type::Bool;
+                    result.immediate = (function.valueTypes[left] == Type::Null) == (value->text == "==");
+                    return emit(result);
+                }
+                auto has = runtime(JM_RT_OPTIONAL_HAS, {left}, Type::Bool);
+                if (value->text == "!=")
+                    return has;
+                Instruction in;
+                in.op = Op::LogicalNot;
+                in.left = has;
+                in.type = Type::Bool;
+                return emit(in);
+            }
             if (value->text == "and" || value->text == "&&" || value->text == "or" || value->text == "||") {
                 const bool isAnd = value->text == "and" || value->text == "&&";
                 const auto resultSlot = declare("$logic" + std::to_string(nextValue), Type::Bool);
@@ -603,7 +753,28 @@ struct Lowerer {
                 result.type = Type::Bool;
                 return emit(std::move(result));
             }
-            const ValueId right = expression(value->right);
+            auto right = expression(value->right);
+            if ((value->text == "==" || value->text == "!=") &&
+                (function.valueTypes[left] == Type::Optional ||
+                 function.valueTypes[right] == Type::Optional)) {
+                auto element =
+                    function.valueTypes[left] == Type::Optional ? elementOf(left) : elementOf(right);
+                left = optional(left, element);
+                right = optional(right, element);
+                auto result = runtime(JM_RT_OPTIONAL_EQUAL, {left, right, integer(static_cast<int>(element))},
+                                      Type::Bool);
+                if (value->text == "==")
+                    return result;
+                Instruction inverse;
+                inverse.op = Op::LogicalNot;
+                inverse.left = result;
+                inverse.type = Type::Bool;
+                return emit(inverse);
+            }
+            if (function.valueTypes[left] == Type::Optional)
+                left = convert(left, elementOf(left));
+            if (function.valueTypes[right] == Type::Optional)
+                right = convert(right, elementOf(right));
             static const std::unordered_map<std::string, Op> operations{
                 {"&", Op::BitAnd},     {"|", Op::BitOr},    {"<<", Op::ShiftLeft},   {">>", Op::ShiftRight},
                 {"+", Op::Add},        {"-", Op::Subtract}, {"*", Op::Multiply},     {"/", Op::Divide},
@@ -683,10 +854,25 @@ struct Lowerer {
             return emit(std::move(instruction));
         }
         case Expression::Kind::Member: {
+            if (value->text.starts_with('?'))
+                return chained(expression(value->left), value->text.substr(1));
             if (value->left && (value->left->kind != Expression::Kind::Identifier ||
                                 hasLocal(value->left->text) || global(value->left->text))) {
                 auto receiver = expression(value->left);
                 auto type = function.valueTypes[receiver];
+                if (type == Type::Optional) {
+                    receiver = convert(receiver, elementOf(receiver));
+                    type = function.valueTypes[receiver];
+                }
+                if (type == Type::Entity) {
+                    auto call = std::make_shared<Expression>();
+                    call->kind = Expression::Kind::Call;
+                    call->left = std::make_shared<Expression>();
+                    call->left->kind = Expression::Kind::Identifier;
+                    call->left->text = "builtin.entity." + value->text;
+                    call->arguments = {{"", value->left}};
+                    return expression(call);
+                }
                 if (type == Type::Range) {
                     auto slot = value->text == "start"  ? 0
                                 : value->text == "end"  ? 1
@@ -696,6 +882,9 @@ struct Lowerer {
                         throw std::runtime_error("JM2005: Unknown Range field.");
                     return runtime(JM_RT_RANGE_FIELD, {receiver, integer(slot)}, Type::Int);
                 }
+                if ((type == Type::String || type == Type::List) && value->text == "length")
+                    return runtime(JM_RT_LENGTH, {receiver, integer(0), integer(static_cast<int>(type))},
+                                   Type::Int);
                 if (type == Type::Map && value->text == "length")
                     return runtime(JM_RT_MAP_LENGTH, {receiver}, Type::Int);
                 if (type == Type::Struct) {
@@ -705,7 +894,8 @@ struct Lowerer {
                     auto slot = fieldIndex(*schema, value->text);
                     auto &field = schema->body[slot];
                     auto result = recordGet(receiver, slot, field.declaredType);
-                    if (field.declaredType == Type::List || field.declaredType == Type::Map)
+                    if (field.declaredType == Type::List || field.declaredType == Type::Map ||
+                        field.declaredType == Type::Optional)
                         elements[result] = field.elementType;
                     return result;
                 }
@@ -758,6 +948,28 @@ struct Lowerer {
             return expression(call);
         }
         case Expression::Kind::Call: {
+            if (value->left && value->left->kind == Expression::Kind::Member &&
+                value->left->text.starts_with('?')) {
+                if (!value->arguments.empty())
+                    throw std::runtime_error("JM6002: Optional chain calls with arguments are unsupported.");
+                return chained(expression(value->left->left), value->left->text.substr(1), true);
+            }
+            if (value->left && value->left->kind == Expression::Kind::Member && value->left->left &&
+                value->left->left->kind == Expression::Kind::Identifier &&
+                hasLocal(value->left->left->text)) {
+                auto receiver = load(value->left->left->text);
+                auto type = function.valueTypes[receiver];
+                if (type == Type::Entity || (type == Type::Optional && elementOf(receiver) == Type::Entity)) {
+                    auto call = std::make_shared<Expression>(*value);
+                    call->left = std::make_shared<Expression>();
+                    call->left->kind = Expression::Kind::Identifier;
+                    call->left->text = "builtin.entity." + value->left->text;
+                    call->builtinSymbolName.clear();
+                    call->builtinSymbolId = 0;
+                    call->arguments.insert(call->arguments.begin(), {"", value->left->left});
+                    return expression(call);
+                }
+            }
             if (value->left && value->left->kind == Expression::Kind::Identifier &&
                 !declarations.contains(value->left->text)) {
                 auto name = value->left->text;
@@ -785,7 +997,8 @@ struct Lowerer {
                             throw std::runtime_error("JM2003: Struct argument mismatch.");
                         auto &field = schema->body[slot];
                         auto id = expression(arg.value, field.elementType);
-                        fields[slot] = convert(id, field.declaredType);
+                        fields[slot] = field.declaredType == Type::Optional ? optional(id, field.elementType)
+                                                                            : convert(id, field.declaredType);
                         supplied[slot] = true;
                     }
                     auto result =
@@ -799,8 +1012,11 @@ struct Lowerer {
                         if (!supplied[i]) {
                             if (!field.expression)
                                 throw std::runtime_error("JM2003: Missing Struct field: " + field.name);
-                            fields[i] =
-                                convert(expression(field.expression, field.elementType), field.declaredType);
+                            fields[i] = field.declaredType == Type::Optional
+                                            ? optional(expression(field.expression, field.elementType),
+                                                       field.elementType)
+                                            : convert(expression(field.expression, field.elementType),
+                                                      field.declaredType);
                         }
                         runtime(JM_RT_RECORD_APPEND,
                                 {result, fields[i], integer(static_cast<int>(field.declaredType))},
@@ -844,6 +1060,10 @@ struct Lowerer {
                                     hasLocal(member.left->text) || global(member.left->text))) {
                     auto receiver = expression(member.left);
                     auto type = function.valueTypes[receiver];
+                    if (type == Type::Optional) {
+                        receiver = convert(receiver, elementOf(receiver));
+                        type = function.valueTypes[receiver];
+                    }
                     std::vector<ValueId> args;
                     for (const auto &arg : value->arguments) {
                         if (!arg.name.empty())
@@ -1084,8 +1304,10 @@ struct Lowerer {
                     auto type = index < found->second->parameterTypes.size()
                                     ? found->second->parameterTypes[index]
                                     : Type::Any;
-                    result = convert(result, type == Type::Any ? Type::Int : type);
-                    if ((type == Type::List || type == Type::Map) &&
+                    result = type == Type::Optional
+                                 ? optional(result, found->second->parameterElementTypes.at(index))
+                                 : convert(result, type == Type::Any ? Type::Int : type);
+                    if ((type == Type::List || type == Type::Map || type == Type::Optional) &&
                         index < found->second->parameterElementTypes.size() &&
                         found->second->parameterElementTypes[index] != Type::Any &&
                         elementOf(result) != found->second->parameterElementTypes[index])
@@ -1129,10 +1351,11 @@ struct Lowerer {
                     id = convert(id, type);
             }
             auto id = emit(std::move(instruction));
-            if (metadata && metadata->returnType == Type::List)
+            if (metadata && (metadata->returnType == Type::List || metadata->returnType == Type::Optional))
                 elements[id] = metadata->returnElementType;
             if (found != declarations.end() &&
-                (found->second->returnType == Type::List || found->second->returnType == Type::Map))
+                (found->second->returnType == Type::List || found->second->returnType == Type::Map ||
+                 found->second->returnType == Type::Optional))
                 elements[id] = found->second->returnElementType;
             return id;
         }
@@ -1159,14 +1382,51 @@ struct Lowerer {
                                                                       : statement.declaredType;
                 if (type != Type::String && type != Type::List && type != Type::Int && type != Type::Bool &&
                     type != Type::Float && type != Type::Struct && type != Type::Tuple && type != Type::Map &&
-                    type != Type::Range && !aggregateType(type))
+                    type != Type::Range && type != Type::Optional && type != Type::Entity &&
+                    !aggregateType(type))
                     throw std::runtime_error("Native local '" + statement.name + "' has unsupported type " +
                                              typeName(type) + "; use Interpreter.");
-                declare(statement.name, type, statement.constant);
+                auto slot = declare(statement.name, type, statement.constant);
+                if (type == Type::Optional)
+                    localElements[slot] =
+                        statement.elementType == Type::Any ? elementOf(value) : statement.elementType;
+                if (type == Type::Optional && statement.elementType == Type::Struct) {
+                    if (!structures.contains(statement.declaredTypeName))
+                        throw std::runtime_error("JM2010: Optional Struct schema missing.");
+                    localStructures[slot] = structures.at(statement.declaredTypeName);
+                }
                 store(statement.name, value, true);
                 break;
             }
             case Statement::Kind::Assignment: {
+                if (statement.target && statement.target->kind == Expression::Kind::Member &&
+                    statement.target->left && statement.target->left->kind == Expression::Kind::Identifier &&
+                    hasLocal(statement.target->left->text)) {
+                    auto receiver = load(statement.target->left->text);
+                    auto type = function.valueTypes[receiver];
+                    if (type == Type::Entity ||
+                        (type == Type::Optional && elementOf(receiver) == Type::Entity)) {
+                        auto argument = statement.expression;
+                        if (statement.operation != "=") {
+                            argument = std::make_shared<Expression>();
+                            argument->kind = Expression::Kind::Binary;
+                            argument->text = statement.operation.substr(0, 1);
+                            argument->left = statement.target;
+                            argument->right = statement.expression;
+                        }
+                        auto property = statement.target->text;
+                        property[0] =
+                            static_cast<char>(std::toupper(static_cast<unsigned char>(property[0])));
+                        auto call = std::make_shared<Expression>();
+                        call->kind = Expression::Kind::Call;
+                        call->left = std::make_shared<Expression>();
+                        call->left->kind = Expression::Kind::Identifier;
+                        call->left->text = "builtin.entity.set" + property;
+                        call->arguments = {{"", statement.target->left}, {"", argument}};
+                        expression(call);
+                        break;
+                    }
+                }
                 if (statement.target && statement.target->kind == Expression::Kind::Member &&
                     statement.target->left && statement.target->left->kind == Expression::Kind::Identifier &&
                     !hasLocal(statement.target->left->text) && !global(statement.target->left->text)) {
@@ -1203,7 +1463,10 @@ struct Lowerer {
                     auto slot = fieldIndex(*schema, statement.target->text);
                     auto &field = schema->body[slot];
                     auto result =
-                        convert(expression(statement.expression, field.elementType), field.declaredType);
+                        field.declaredType == Type::Optional
+                            ? optional(expression(statement.expression, field.elementType), field.elementType)
+                            : convert(expression(statement.expression, field.elementType),
+                                      field.declaredType);
                     if (statement.operation != "=") {
                         auto old = recordGet(receiver, slot, field.declaredType);
                         if (field.declaredType == Type::Vector2 || field.declaredType == Type::Vector3) {
@@ -1301,8 +1564,10 @@ struct Lowerer {
                         throw std::runtime_error("Typed List return element mismatch.");
                     function.returnElementType = element;
                 }
-                const auto converted =
-                    function.returnType == Type::Void ? result : convert(result, function.returnType);
+                const auto converted = function.returnType == Type::Void ? result
+                                       : function.returnType == Type::Optional
+                                           ? optional(result, function.returnElementType)
+                                           : convert(result, function.returnType);
                 at(current).terminator = {Terminator::Kind::Return, converted, 0, 0};
                 break;
             }
@@ -1482,7 +1747,7 @@ struct Lowerer {
             auto element = i < declaration.parameterElementTypes.size() ? declaration.parameterElementTypes[i]
                                                                         : Type::Any;
             function.parameterElementTypes.push_back(element);
-            if (type == Type::List || type == Type::Map) {
+            if (type == Type::List || type == Type::Map || type == Type::Optional) {
                 if (element == Type::Any)
                     throw std::runtime_error("Native List parameters require List<T> annotations.");
                 localElements[slot] = element;
@@ -1507,7 +1772,7 @@ bool lower(const Program &program, Module &output, LoweringDiagnostic &diagnosti
            const NativeFunctionRegistry *registry) {
     try {
         std::vector<Diagnostic> errors;
-        if (!check(program, errors))
+        if (!check(program, errors, registry))
             throw std::runtime_error(errors.front().code + ": " + errors.front().message);
         Module result;
         std::unordered_map<std::string, const Statement *> declarations;

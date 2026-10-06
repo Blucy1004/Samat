@@ -3,8 +3,8 @@
 #include <SDL3/SDL.h>
 
 #include "JMEngine/Scene/Scene.hpp"
-#include "JMEngine/Script/Script.hpp"
 #include "JMEngine/Script/EngineScriptAPI.hpp"
+#include "JMEngine/Script/Script.hpp"
 
 #include <filesystem>
 #include <memory>
@@ -23,20 +23,22 @@ struct ApplicationConfig {
 };
 
 class Application {
-public:
+  public:
     explicit Application(ApplicationConfig config = {});
     ~Application();
 
-    Application(const Application&) = delete;
-    Application& operator=(const Application&) = delete;
+    Application(const Application &) = delete;
+    Application &operator=(const Application &) = delete;
 
     std::size_t run(std::size_t maximumFrames = 0);
-    void startLanguagePlay(std::string source,bool korean=false);
+    void startLanguagePlay(std::string source, bool korean = false,
+                           EngineScriptBackend backend = EngineScriptBackend::Interpreter);
+    bool applyLanguageEdit(std::string source, bool korean = false);
     void stopPlay();
-    bool isPlaying() const {return playing_;}
-    const Scene& scene() const {return scene_;}
+    bool isPlaying() const { return playing_; }
+    const Scene &scene() const { return scene_; }
 
-private:
+  private:
     void processEvents();
     void update(float deltaSeconds);
     void render();
@@ -53,7 +55,7 @@ private:
     void shutdown() noexcept;
 
     ApplicationConfig config_;
-    SDL_Window* window_{nullptr};
+    SDL_Window *window_{nullptr};
     SDL_GLContext glContext_{nullptr};
     std::unique_ptr<Renderer> renderer_;
     Scene scene_;
@@ -92,6 +94,7 @@ private:
     bool languageCompiled_{false};
     bool languageKoreanSyntax_{false};
     bool languagePlayEnabled_{false};
+    int languagePlayBackend_{};
     std::unique_ptr<EngineEventRuntime> languageRuntime_;
     bool spacePressedThisFrame_{false};
     std::unordered_set<std::string> keysPressedThisFrame_;

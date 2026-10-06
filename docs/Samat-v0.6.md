@@ -1,5 +1,7 @@
 # Samat / 訓C正音 v0.6 — Native Data Model & Engine Runtime
 
+Historical checkpoint: v0.7 changes the Optional/Entity runtime ABI to version 3; current capabilities are in [Samat-v0.7.md](Samat-v0.7.md).
+
 This report distinguishes executed capabilities from the remaining roadmap. v0.6 extends native data execution through shared AST → JMIR → LLVM → the C runtime ABI; it does not claim completion of every requested language/editor feature.
 
 ## 1. v0.5+ checkpoint

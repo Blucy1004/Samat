@@ -178,16 +178,22 @@ void jm_runtime_collect() {
         if (!id || id > current->objects.size() || !current->objects[id - 1])
             fail("JM6001: Invalid managed root.");
         auto &value = *current->objects[id - 1];
+        if (value.type == JM_RT_OPTIONAL && !value.values.empty() &&
+            (value.element == JM_RT_STRING || value.element == JM_RT_LIST || value.element == JM_RT_MAP ||
+             value.element == JM_RT_STRUCT || value.element == JM_RT_TUPLE ||
+             value.element == JM_RT_VECTOR2 || value.element == JM_RT_VECTOR3 ||
+             value.element == JM_RT_COLOR || value.element == JM_RT_RANGE || value.element == JM_RT_ENTITY))
+            work.push_back(value.values[0]);
         if (value.type == JM_RT_MAP && (value.element == JM_RT_STRING || value.element == JM_RT_LIST))
             for (auto &[key, child] : value.entries)
                 work.push_back(child);
-        if (value.type == JM_RT_STRUCT || value.type == JM_RT_TUPLE) {
+        if (value.type == JM_RT_STRUCT || value.type == JM_RT_TUPLE || value.type == JM_RT_ENTITY) {
             for (size_t i = 0; i < value.values.size(); ++i)
                 if (value.types[i] == JM_RT_STRING || value.types[i] == JM_RT_LIST ||
                     value.types[i] == JM_RT_MAP || value.types[i] == JM_RT_STRUCT ||
                     value.types[i] == JM_RT_TUPLE || value.types[i] == JM_RT_VECTOR2 ||
                     value.types[i] == JM_RT_VECTOR3 || value.types[i] == JM_RT_COLOR ||
-                    value.types[i] == JM_RT_RANGE)
+                    value.types[i] == JM_RT_RANGE || value.types[i] == JM_RT_OPTIONAL)
                     work.push_back(value.values[i]);
         }
         if (value.type == JM_RT_LIST && value.element == JM_RT_STRING)
@@ -214,6 +220,52 @@ const char *jm_string_bytes(JMHandle value, uint64_t *length) {
     return result.data();
 }
 uint64_t jm_runtime_call(uint64_t operation, uint64_t a, uint64_t b, uint64_t c) {
+    if (operation >= JM_RT_OPTIONAL_NONE) {
+        if (operation == JM_RT_OPTIONAL_NONE || operation == JM_RT_OPTIONAL_SOME) {
+            if (a < JM_RT_INT || a == JM_RT_VOID || a > JM_RT_ENTITY || a == JM_RT_OPTIONAL)
+                fail("JM2010: Invalid Optional payload tag.");
+            return add({JM_RT_OPTIONAL,
+                        {},
+                        operation == JM_RT_OPTIONAL_SOME ? std::vector<uint64_t>{b} : std::vector<uint64_t>{},
+                        a,
+                        {},
+                        {}});
+        }
+        if (operation == JM_RT_OPTIONAL_EQUAL) {
+            auto &left = object(a, JM_RT_OPTIONAL), &right = object(b, JM_RT_OPTIONAL);
+            if (left.element != c || right.element != c)
+                fail("JM2010: Optional equality payload mismatch.");
+            if (left.values.empty() || right.values.empty())
+                return left.values.empty() == right.values.empty();
+            auto x = left.values[0], y = right.values[0];
+            if (c == JM_RT_FLOAT)
+                return std::bit_cast<double>(x) == std::bit_cast<double>(y);
+            if (c == JM_RT_STRING)
+                return text(x) == text(y);
+            if (c == JM_RT_VECTOR2 || c == JM_RT_VECTOR3 || c == JM_RT_COLOR)
+                return jm_runtime_call(JM_RT_AGGREGATE_EQUAL, x, y, 0);
+            if (c == JM_RT_ENTITY) {
+                auto &first = object(x, JM_RT_ENTITY), &second = object(y, JM_RT_ENTITY);
+                auto layout = std::vector<uint64_t>{JM_RT_STRING, JM_RT_INT, JM_RT_INT};
+                if (first.values.size() != 3 || second.values.size() != 3 || first.types != layout ||
+                    second.types != layout)
+                    fail("JM6002: Invalid Entity equality layout.");
+                return text(first.values[0]) == text(second.values[0]) &&
+                       first.values[1] == second.values[1] && first.values[2] == second.values[2];
+            }
+            if (c != JM_RT_INT && c != JM_RT_BOOL && c != JM_RT_STRUCT)
+                fail("JM6002: Unsupported Optional equality payload.");
+            return x == y;
+        }
+        auto &box = object(a, JM_RT_OPTIONAL);
+        if (operation == JM_RT_OPTIONAL_HAS)
+            return !box.values.empty();
+        if (operation != JM_RT_OPTIONAL_GET || box.element != b)
+            fail("JM2010: Optional payload tag mismatch.");
+        if (box.values.empty())
+            fail("JM2011: Optional is empty; check != null before use.");
+        return box.values[0];
+    }
     if (operation >= JM_RT_RANGE_CREATE) {
         if (operation == JM_RT_RANGE_CREATE) {
             if (std::bit_cast<int64_t>(c) == 0)
@@ -278,14 +330,14 @@ uint64_t jm_runtime_call(uint64_t operation, uint64_t a, uint64_t b, uint64_t c)
     }
     if (operation >= JM_RT_RECORD_CREATE) {
         if (operation == JM_RT_RECORD_CREATE) {
-            if (a != JM_RT_STRUCT && a != JM_RT_TUPLE)
+            if (a != JM_RT_STRUCT && a != JM_RT_TUPLE && a != JM_RT_ENTITY)
                 fail("JM6002: Invalid record type.");
             return add({a, {}, {}, 0, {}});
         }
         if (!a || a > current->objects.size() || !current->objects[a - 1])
             fail("JM6001: Invalid record handle.");
         auto &record = *current->objects[a - 1];
-        if (record.type != JM_RT_STRUCT && record.type != JM_RT_TUPLE)
+        if (record.type != JM_RT_STRUCT && record.type != JM_RT_TUPLE && record.type != JM_RT_ENTITY)
             fail("JM6002: Invalid record receiver.");
         if (operation == JM_RT_RECORD_APPEND) {
             if (c == JM_RT_STRUCT || c == JM_RT_TUPLE || c == JM_RT_ANY || c == JM_RT_VOID)

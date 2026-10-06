@@ -12,6 +12,9 @@
 #include <vector>
 
 namespace jm::script {
+namespace ir {
+class NativeFunctionRegistry;
+}
 
 enum class Type {
     Any,
@@ -28,15 +31,19 @@ enum class Type {
     Enum,
     Struct,
     Tuple,
-    Range
+    Range,
+    Optional,
+    Entity,
+    Null
 };
 std::string typeName(Type type);
 Type parseType(std::string_view name);
 struct TypeAnnotation {
     Type base{Type::Any}, element{Type::Any};
+    std::string nominal{};
 };
 TypeAnnotation parseAnnotation(std::string_view text);
-std::string annotationName(Type base, Type element = Type::Any);
+std::string annotationName(Type base, Type element = Type::Any, std::string_view nominal = {});
 
 struct Vector2Value {
     double x{0.0};
@@ -53,9 +60,11 @@ struct ColorValue {
 };
 struct EntityReference {
     std::string id;
+    std::uint64_t sceneIdentity{}, generation{};
 };
 
 struct StructObject;
+struct OptionalValue;
 struct RangeValue {
     std::int64_t start{}, end{}, step{1};
 };
@@ -71,9 +80,9 @@ struct Value {
     using StructPtr = std::shared_ptr<StructObject>;
     using ArrayPtr = std::shared_ptr<Array>;
     using MapPtr = std::shared_ptr<Map>;
-    using Storage =
-        std::variant<std::monostate, bool, double, std::string, ArrayPtr, MapPtr, Vector2Value, ColorValue,
-                     EntityReference, std::int64_t, Vector3Value, EnumValue, StructPtr, TuplePtr, RangeValue>;
+    using Storage = std::variant<std::monostate, bool, double, std::string, ArrayPtr, MapPtr, Vector2Value,
+                                 ColorValue, EntityReference, std::int64_t, Vector3Value, EnumValue,
+                                 StructPtr, TuplePtr, RangeValue, std::shared_ptr<OptionalValue>>;
     Storage data;
 
     Value() = default;
@@ -92,12 +101,21 @@ struct Value {
     Value(ColorValue value) : data(value) {}
     Value(EntityReference value) : data(std::move(value)) {}
 
+    static Value optional(Type element, Value value = {}, std::string nominal = {});
+    Value unwrap() const;
     static Value array(Array value);
     static Value map(Map value);
     bool isNull() const;
     std::string typeName() const;
     std::string toString() const;
     Type type() const;
+};
+
+struct OptionalValue {
+    Type element;
+    Value value;
+    std::string nominal;
+    std::map<std::string, TypeAnnotation> schema;
 };
 
 struct Value::Array : std::vector<Value> {
@@ -172,6 +190,8 @@ struct Statement {
     std::vector<std::string> parameters;
     StatementList body;
     StatementList alternative;
+    std::string declaredTypeName, returnTypeName;
+    std::vector<std::string> parameterTypeNames;
     Type declaredType{Type::Any};
     Type returnType{Type::Any};
     Type elementType{Type::Any}, returnElementType{Type::Any};
@@ -203,6 +223,8 @@ class Environment : public std::enable_shared_from_this<Environment> {
     bool containsLocal(const std::string &name) const;
     bool contains(const std::string &name) const;
     std::shared_ptr<Environment> child();
+    void eraseLocal(const std::string &name);
+    std::map<std::string, std::string> inspect(std::size_t limit = 64) const;
 
   private:
     struct Binding {
@@ -221,6 +243,7 @@ struct RunOptions {
     std::string entryFunction;
     std::string eventName;
     std::function<bool(std::string_view)> moduleResolver;
+    std::shared_ptr<const ir::NativeFunctionRegistry> nativeMetadata;
 };
 
 struct ExecutionResult {
@@ -242,12 +265,17 @@ class ExecutionSession {
     ExecutionResult dispatch(const std::string &event);
     ExecutionResult invoke(const std::string &entry);
     ExecutionResult evaluate(const std::string &source);
+    bool hotSwap(Program candidate, Diagnostic &diagnostic);
+    std::uint64_t generation() const;
+    std::map<std::string, std::string> inspect() const;
 
   private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
 
+bool hotSwapCompatible(const Program &running, const Program &candidate, Diagnostic &diagnostic,
+                       const ir::NativeFunctionRegistry *registry = nullptr);
 ExpressionPtr parseExpression(const std::string &source, std::string *error = nullptr);
 std::uint64_t stableBuiltinSymbolId(std::string_view name);
 Value evaluateExpression(const ExpressionPtr &expression, const Environment &environment,
@@ -257,7 +285,8 @@ Value evaluateExpression(const std::string &source, const Environment &environme
 bool parseCode(const std::string &source, Program &output, Diagnostic &diagnostic);
 bool parseKorean(const std::string &source, Program &output, Diagnostic &diagnostic);
 bool structurallyEqual(const Program &left, const Program &right);
-bool check(const Program &program, std::vector<Diagnostic> &diagnostics);
+bool check(const Program &program, std::vector<Diagnostic> &diagnostics,
+           const ir::NativeFunctionRegistry *registry = nullptr);
 std::string renderCode(const Program &program);
 std::string renderKorean(const Program &program);
 ExecutionResult execute(const Program &program, const RunOptions &options = {},

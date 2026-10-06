@@ -55,7 +55,8 @@ llvm::Type *scalar(llvm::LLVMContext &context, Type type) {
         return llvm::Type::getVoidTy(context);
     if (type != Type::String && type != Type::List && type != Type::Int && type != Type::Bool &&
         type != Type::Vector2 && type != Type::Vector3 && type != Type::Color && type != Type::Struct &&
-        type != Type::Tuple && type != Type::Map && type != Type::Range)
+        type != Type::Tuple && type != Type::Map && type != Type::Range && type != Type::Optional &&
+        type != Type::Null && type != Type::Entity)
         throw std::runtime_error("LLVM scalar capability excludes " + typeName(type) + ". Use Interpreter.");
     return llvm::Type::getInt64Ty(context);
 }
@@ -91,7 +92,55 @@ std::uint64_t encodeAggregate(const Value &value) {
         jm_runtime_call(JM_RT_AGGREGATE_APPEND, result, std::bit_cast<uint64_t>(v), static_cast<int>(type));
     return result;
 }
-Value decodeFFI(std::uint64_t bits, Type type) {
+uint64_t encodeFFI(const Value &value) {
+    auto type = value.type();
+    if (type == Type::Optional) {
+        auto &box = *std::get<std::shared_ptr<OptionalValue>>(value.data);
+        return jm_runtime_call(value.isNull() ? JM_RT_OPTIONAL_NONE : JM_RT_OPTIONAL_SOME,
+                               static_cast<int>(box.element), value.isNull() ? 0 : encodeFFI(box.value), 0);
+    }
+    if (type == Type::Entity) {
+        auto &entity = std::get<EntityReference>(value.data);
+        auto result = jm_runtime_call(JM_RT_RECORD_CREATE, JM_RT_ENTITY, 0, 0);
+        jm_runtime_call(JM_RT_RECORD_APPEND, result, jm_string_create(entity.id.data(), entity.id.size()),
+                        JM_RT_STRING);
+        jm_runtime_call(JM_RT_RECORD_APPEND, result, entity.sceneIdentity, JM_RT_INT);
+        jm_runtime_call(JM_RT_RECORD_APPEND, result, entity.generation, JM_RT_INT);
+        return result;
+    }
+    if (type == Type::Vector2 || type == Type::Vector3 || type == Type::Color)
+        return encodeAggregate(value);
+    if (type == Type::Int)
+        return static_cast<uint64_t>(std::get<int64_t>(value.data));
+    if (type == Type::Float)
+        return std::bit_cast<uint64_t>(std::get<double>(value.data));
+    if (type == Type::Bool)
+        return std::get<bool>(value.data);
+    if (type == Type::String) {
+        auto &text = std::get<std::string>(value.data);
+        return jm_string_create(text.data(), text.size());
+    }
+    throw std::runtime_error("JM7001: Unsupported Optional/Entity FFI payload.");
+}
+Value decodeFFI(std::uint64_t bits, Type type, Type element = Type::Any) {
+    if (type == Type::Optional) {
+        if (element == Type::Any)
+            throw std::runtime_error("JM7001: Optional FFI payload metadata missing.");
+        if (!jm_runtime_call(JM_RT_OPTIONAL_HAS, bits, 0, 0))
+            return Value::optional(element);
+        return Value::optional(
+            element,
+            decodeFFI(jm_runtime_call(JM_RT_OPTIONAL_GET, bits, static_cast<int>(element), 0), element));
+    }
+    if (type == Type::Entity) {
+        auto field = [&](uint64_t slot, Type fieldType) {
+            return jm_runtime_call(JM_RT_RECORD_GET, bits, (static_cast<uint64_t>(fieldType) << 32) | slot,
+                                   0);
+        };
+        auto id = decodeFFI(field(0, Type::String), Type::String);
+        return Value(
+            EntityReference{std::get<std::string>(id.data), field(1, Type::Int), field(2, Type::Int)});
+    }
     if (type == Type::List) {
         Value::Array result;
         auto element = static_cast<Type>(jm_list_element_type(bits));
@@ -131,13 +180,22 @@ std::uint64_t typedDispatch(std::uint64_t cookie, std::uint64_t a, std::uint64_t
     std::uint64_t bits[]{a, b, c, d};
     std::vector<Value> args;
     for (size_t i = 0; i < binding.metadata.parameterTypes.size(); ++i)
-        args.push_back(decodeFFI(bits[i], binding.metadata.parameterTypes[i]));
+        args.push_back(decodeFFI(bits[i], binding.metadata.parameterTypes[i],
+                                 i < binding.metadata.parameterElementTypes.size()
+                                     ? binding.metadata.parameterElementTypes[i]
+                                     : Type::Any));
     auto value = binding.function(args);
     auto type = binding.metadata.returnType;
     if (type == Type::Float && value.type() == Type::Int)
         value = Value(static_cast<double>(std::get<std::int64_t>(value.data)));
     if (value.type() != type)
         throw std::runtime_error("JM7001: Typed FFI returned a value that does not match metadata.");
+    if (type == Type::Optional) {
+        value = Value::optional(binding.metadata.returnElementType, value);
+        return encodeFFI(value);
+    }
+    if (type == Type::Entity)
+        return encodeFFI(value);
     if (type == Type::List) {
         auto element = binding.metadata.returnElementType;
         auto list = jm_runtime_call(JM_RT_LIST_CREATE, static_cast<int>(element), 0, 0);
@@ -324,7 +382,7 @@ std::unique_ptr<llvm::Module> translate(const Module &input, llvm::LLVMContext &
                     b.CreateStore(load(in.left), globals.at(in.symbol));
                     if (in.type == Type::String || in.type == Type::List || in.type == Type::Vector2 ||
                         in.type == Type::Vector3 || in.type == Type::Color || in.type == Type::Struct ||
-                        in.type == Type::Tuple) {
+                        in.type == Type::Tuple || in.type == Type::Optional) {
                         auto callee = result->getOrInsertFunction(
                             "jm_runtime_root", llvm::FunctionType::get(b.getVoidTy(), {i64, i64}, false));
                         b.CreateCall(callee, {b.getInt64(globalRoots.at(in.symbol)), load(in.left)});
@@ -733,10 +791,12 @@ NativeCode LLVMBackend::compile(const Module &input, const NativeFunctionRegistr
     struct Signature {
         Type result;
         std::vector<Type> parameters, elements;
+        Type resultElement;
     };
     std::unordered_map<std::string, Signature> signatures;
     for (const auto &fn : input.functions)
-        signatures[fn.name] = {fn.returnType, fn.parameterTypes, fn.parameterElementTypes};
+        signatures[fn.name] = {fn.returnType, fn.parameterTypes, fn.parameterElementTypes,
+                               fn.returnElementType};
     struct RuntimeOwner {
         std::recursive_mutex mutex;
         bool running{};
@@ -768,6 +828,10 @@ NativeCode LLVMBackend::compile(const Module &input, const NativeFunctionRegistr
         if (found == signatures.end())
             throw std::runtime_error("Native function not found: " + name);
         const auto &signature = found->second;
+        if (signature.result == Type::Optional &&
+            (signature.resultElement == Type::Struct || signature.resultElement == Type::List ||
+             signature.resultElement == Type::Map || signature.resultElement == Type::Tuple))
+            throw std::runtime_error("JM6002: Public Optional aggregate payload marshaling is unsupported.");
         if (signature.result == Type::Struct || signature.result == Type::Tuple ||
             signature.result == Type::Map || signature.result == Type::Range)
             throw std::runtime_error(
@@ -776,9 +840,13 @@ NativeCode LLVMBackend::compile(const Module &input, const NativeFunctionRegistr
             throw std::runtime_error("LLVM invocation argument count mismatch: " + name);
         std::uint64_t bits[4]{};
         for (std::size_t i = 0; i < args.size(); ++i) {
-            if ((signature.parameters[i] == Type::Vector2 || signature.parameters[i] == Type::Vector3 ||
-                 signature.parameters[i] == Type::Color) &&
-                args[i].type() == signature.parameters[i])
+            if (signature.parameters[i] == Type::Optional)
+                bits[i] = encodeFFI(Value::optional(signature.elements.at(i), args[i]));
+            else if (signature.parameters[i] == Type::Entity && args[i].type() == Type::Entity)
+                bits[i] = encodeFFI(args[i]);
+            else if ((signature.parameters[i] == Type::Vector2 || signature.parameters[i] == Type::Vector3 ||
+                      signature.parameters[i] == Type::Color) &&
+                     args[i].type() == signature.parameters[i])
                 bits[i] = encodeAggregate(args[i]);
             else if (signature.parameters[i] == Type::Float) {
                 double number;
@@ -826,6 +894,8 @@ NativeCode LLVMBackend::compile(const Module &input, const NativeFunctionRegistr
             throw std::runtime_error(llvmError(symbol.takeError()));
         using Entry = std::uint64_t (*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
         const auto output = symbol->toPtr<Entry>()(bits[0], bits[1], bits[2], bits[3]);
+        if (signature.result == Type::Optional || signature.result == Type::Entity)
+            return decodeFFI(output, signature.result, signature.resultElement);
         if (signature.result == Type::Vector2 || signature.result == Type::Vector3 ||
             signature.result == Type::Color)
             return decodeFFI(output, signature.result);

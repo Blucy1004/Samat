@@ -12,6 +12,7 @@
 #include <limits>
 #include <regex>
 #include <sstream>
+#include <thread>
 #include <unordered_set>
 #include <utility>
 
@@ -63,7 +64,10 @@ struct Token {
         Tilde,
         And,
         Or,
-        Arrow
+        Arrow,
+        Question,
+        Coalesce,
+        OptionalDot
     };
     Kind kind{Kind::End};
     std::string text;
@@ -203,7 +207,11 @@ std::vector<Token> lex(const std::string &source) {
                     position += length;
                 };
                 const char next = position + 1 < line.size() ? line[position + 1] : '\0';
-                if (ch == '-' && next == '>')
+                if (ch == '?' && next == '?')
+                    push(Token::Kind::Coalesce, 2);
+                else if (ch == '?' && next == '.')
+                    push(Token::Kind::OptionalDot, 2);
+                else if (ch == '-' && next == '>')
                     push(Token::Kind::Arrow, 2);
                 else if (ch == '.' && next == '.')
                     push(Token::Kind::Range, position + 2 < line.size() && line[position + 2] == '<' ? 3 : 2);
@@ -237,6 +245,9 @@ std::vector<Token> lex(const std::string &source) {
                     push(Token::Kind::Or, 2);
                 else
                     switch (ch) {
+                    case '?':
+                        push(Token::Kind::Question);
+                        break;
                     case '(':
                         push(Token::Kind::LeftParen);
                         break;
@@ -331,7 +342,7 @@ class ExpressionParser {
   public:
     explicit ExpressionParser(const std::vector<Token> &tokens, std::size_t &position)
         : tokens_(tokens), position_(position) {}
-    ExpressionPtr parse() { return parseOr(); }
+    ExpressionPtr parse() { return parseCoalesce(); }
 
   private:
     const Token &peek() const { return tokens_.at(position_); }
@@ -351,6 +362,14 @@ class ExpressionParser {
         result->left = std::move(left);
         result->right = std::move(right);
         return result;
+    }
+    ExpressionPtr parseCoalesce() {
+        auto value = parseOr();
+        if (peek().kind == Token::Kind::Coalesce) {
+            auto op = tokens_[position_++];
+            return binary(value, op, parseCoalesce());
+        }
+        return value;
     }
     ExpressionPtr parseOr() {
         auto value = parseAnd();
@@ -476,7 +495,7 @@ class ExpressionParser {
                             argument.name = tokens_[position_++].text;
                             ++position_;
                         }
-                        argument.value = parseOr();
+                        argument.value = parseCoalesce();
                         call->arguments.push_back(std::move(argument));
                     } while (take(Token::Kind::Comma));
                     expect(Token::Kind::RightParen, "Expected ')' after function arguments.");
@@ -485,14 +504,15 @@ class ExpressionParser {
             } else if (take(Token::Kind::LeftBracket)) {
                 auto access = node(Expression::Kind::Index);
                 access->left = value;
-                access->right = parseOr();
+                access->right = parseCoalesce();
                 expect(Token::Kind::RightBracket, "Expected ']' after index.");
                 value = std::move(access);
-            } else if (take(Token::Kind::Dot)) {
+            } else if (peek().kind == Token::Kind::Dot || peek().kind == Token::Kind::OptionalDot) {
+                const bool optional = tokens_[position_++].kind == Token::Kind::OptionalDot;
                 Token member = peek().kind == Token::Kind::Number
                                    ? tokens_[position_++]
                                    : expect(Token::Kind::Identifier, "Expected a property name after '.'.");
-                auto access = node(Expression::Kind::Member, member.text);
+                auto access = node(Expression::Kind::Member, optional ? "?" + member.text : member.text);
                 access->left = value;
                 if (value->kind == Expression::Kind::Identifier) {
                     access->builtinSymbolName = "builtin." + value->text + "." + member.text;
@@ -540,7 +560,7 @@ class ExpressionParser {
         if (take(Token::Kind::LeftParen)) {
             if (take(Token::Kind::RightParen))
                 return node(Expression::Kind::Tuple);
-            auto value = parseOr();
+            auto value = parseCoalesce();
             if (take(Token::Kind::Comma)) {
                 auto tuple = node(Expression::Kind::Tuple);
                 tuple->elements.push_back(value);
@@ -688,10 +708,13 @@ bool equal(const Value &left, const Value &right) {
         auto b = std::get<ColorValue>(right.data);
         return a->r == b.r && a->g == b.g && a->b == b.b && a->a == b.a;
     }
-    return std::get<EntityReference>(left.data).id == std::get<EntityReference>(right.data).id;
+    auto a = std::get<EntityReference>(left.data), b = std::get<EntityReference>(right.data);
+    return a.id == b.id && a.sceneIdentity == b.sceneIdentity && a.generation == b.generation;
 }
 
-Value coerceElement(Value value, Type type) {
+Value coerceElement(Value value, Type type, Type element = Type::Any, std::string nominal = {}) {
+    if (type == Type::Optional)
+        return Value::optional(element, std::move(value), std::move(nominal));
     if (type == Type::Any)
         return value;
     if (type == Type::Float && value.type() == Type::Int)
@@ -731,6 +754,8 @@ void typeMap(Value &value, Type type) {
 void rejectCycle(const Value &candidate, const void *target) {
     std::unordered_set<const void *> visited;
     std::function<bool(const Value &)> contains = [&](const Value &value) {
+        if (auto optional = std::get_if<std::shared_ptr<OptionalValue>>(&value.data))
+            return contains((*optional)->value);
         if (auto array = std::get_if<Value::ArrayPtr>(&value.data)) {
             if (array->get() == target)
                 return true;
@@ -963,7 +988,7 @@ Value evaluate(const ExpressionPtr &expression, const Environment &environment, 
         return Value::map(std::move(result));
     }
     case Expression::Kind::Unary: {
-        const Value value = evaluate(expression->right, environment, host);
+        const Value value = evaluate(expression->right, environment, host).unwrap();
         if (auto integer = std::get_if<std::int64_t>(&value.data)) {
             if (expression->text == "-")
                 return Value(
@@ -983,12 +1008,16 @@ Value evaluate(const ExpressionPtr &expression, const Environment &environment, 
     }
     case Expression::Kind::Binary: {
         const std::string &op = expression->text;
-        const Value left = evaluate(expression->left, environment, host);
+        const Value rawLeft = evaluate(expression->left, environment, host);
+        if (op == "??")
+            return rawLeft.isNull() ? evaluate(expression->right, environment, host) : rawLeft.unwrap();
+        const Value left = (op == "==" || op == "!=") && rawLeft.isNull() ? Value{} : rawLeft.unwrap();
         if (op == "and" || op == "&&")
             return truth(left) ? Value(truth(evaluate(expression->right, environment, host))) : Value(false);
         if (op == "or" || op == "||")
             return truth(left) ? Value(true) : Value(truth(evaluate(expression->right, environment, host)));
-        const Value right = evaluate(expression->right, environment, host);
+        const Value rawRight = evaluate(expression->right, environment, host);
+        const Value right = (op == "==" || op == "!=") && rawRight.isNull() ? Value{} : rawRight.unwrap();
         if (op == "==")
             return Value(equal(left, right));
         if (op == "!=")
@@ -1130,7 +1159,7 @@ Value evaluate(const ExpressionPtr &expression, const Environment &environment, 
         throw std::runtime_error("Unknown binary operator: " + op);
     }
     case Expression::Kind::Index: {
-        const Value object = evaluate(expression->left, environment, host);
+        const Value object = evaluate(expression->left, environment, host).unwrap();
         const Value index = evaluate(expression->right, environment, host);
         if (auto tuple = std::get_if<Value::TuplePtr>(&object.data)) {
             auto at = checkedIndex(index);
@@ -1164,6 +1193,32 @@ Value evaluate(const ExpressionPtr &expression, const Environment &environment, 
         throw std::runtime_error("Only a list, map, or string can be indexed.");
     }
     case Expression::Kind::Member: {
+        if (expression->text.starts_with('?')) {
+            auto raw = evaluate(expression->left, environment, host);
+            if (raw.type() != Type::Optional)
+                throw std::runtime_error("JM2010: ?. requires Optional.");
+            auto element = std::get<std::shared_ptr<OptionalValue>>(raw.data)->element;
+            auto resultType =
+                element == Type::Entity ? expression->text == "?position" ? Type::Vector2 : Type::String
+                : element == Type::Vector2 || element == Type::Vector3 || element == Type::Color ? Type::Float
+                                                                                                 : Type::Int;
+            if (element == Type::Struct) {
+                auto &schema = std::get<std::shared_ptr<OptionalValue>>(raw.data)->schema;
+                if (!schema.contains(expression->text.substr(1)))
+                    throw std::runtime_error("JM2010: Unknown Optional Struct field.");
+                resultType = schema.at(expression->text.substr(1)).base;
+            }
+            if (raw.isNull())
+                return Value::optional(resultType);
+            auto member = std::make_shared<Expression>(*expression);
+            member->text.erase(0, 1);
+            member->left = node(Expression::Kind::Literal);
+            member->left->literal = raw.unwrap();
+            member->builtinSymbolId = 0;
+            member->builtinSymbolName.clear();
+            auto value = evaluate(member, environment, host);
+            return Value::optional(value.type(), value);
+        }
         if (expression->left && expression->left->kind == Expression::Kind::Identifier &&
             expression->left->text == "math" && !environment.contains("math") &&
             (expression->text == "PI" || expression->text == "E"))
@@ -1185,7 +1240,9 @@ Value evaluate(const ExpressionPtr &expression, const Environment &environment, 
             } catch (const std::out_of_range &) {
             }
         }
-        const Value object = evaluate(expression->left, environment, host);
+        const Value object = evaluate(expression->left, environment, host).unwrap();
+        if (object.type() == Type::Entity && host)
+            return host("builtin.entity." + expression->text, {object}, {});
         if (auto list = std::get_if<Value::ArrayPtr>(&object.data); list && expression->text == "length")
             return Value(static_cast<std::int64_t>((*list)->size()));
         if (auto map = std::get_if<Value::MapPtr>(&object.data)) {
@@ -1269,6 +1326,21 @@ Value evaluate(const ExpressionPtr &expression, const Environment &environment, 
         throw std::runtime_error("Unknown property '" + expression->text + "' on " + object.typeName() + ".");
     }
     case Expression::Kind::Call: {
+        if (expression->left->kind == Expression::Kind::Member && expression->left->text.starts_with('?')) {
+            auto raw = evaluate(expression->left->left, environment, host);
+            if (raw.type() != Type::Optional)
+                throw std::runtime_error("JM2010: ?. requires Optional.");
+            if (raw.isNull())
+                return Value{};
+            auto call = std::make_shared<Expression>(*expression);
+            call->left = std::make_shared<Expression>(*expression->left);
+            call->left->text.erase(0, 1);
+            call->left->left = node(Expression::Kind::Literal);
+            call->left->left->literal = raw.unwrap();
+            call->builtinSymbolId = 0;
+            call->builtinSymbolName.clear();
+            return evaluate(call, environment, host);
+        }
         std::vector<Value> args;
         std::vector<std::string> names;
         for (const auto &argument : expression->arguments) {
@@ -1290,7 +1362,12 @@ Value evaluate(const ExpressionPtr &expression, const Environment &environment, 
                 } catch (const std::out_of_range &) {
                 }
             }
-            const Value receiver = evaluate(expression->left->left, environment, host);
+            const Value receiver = evaluate(expression->left->left, environment, host).unwrap();
+            if (receiver.type() == Type::Entity && host) {
+                args.insert(args.begin(), receiver);
+                names.insert(names.begin(), "entity");
+                return host("builtin.entity." + expression->left->text, args, names);
+            }
             if (receiver.type() == Type::Vector2 || receiver.type() == Type::Vector3) {
                 auto vec = [](const Value &value) {
                     if (auto v = std::get_if<Vector2Value>(&value.data))
@@ -1622,6 +1699,7 @@ class CodeParser {
                 expect(Token::Kind::Colon, "Struct fields need type annotations.");
                 auto type = annotation();
                 field.declaredType = type.base;
+                field.declaredTypeName = type.nominal;
                 field.elementType = type.element;
                 if (take(Token::Kind::Equal))
                     field.expression = expression();
@@ -1641,6 +1719,8 @@ class CodeParser {
             expect(Token::Kind::Greater, "Expected '>' after collection element types.");
             text += ">";
         }
+        if (take(Token::Kind::Question))
+            text += "?";
         return parseAnnotation(text);
     }
     Statement statement() {
@@ -1686,6 +1766,7 @@ class CodeParser {
             if (take(Token::Kind::Colon)) {
                 auto type = annotation();
                 result.declaredType = type.base;
+                result.declaredTypeName = type.nominal;
                 result.elementType = type.element;
             }
             if (take(Token::Kind::Equal))
@@ -1707,6 +1788,7 @@ class CodeParser {
                         expect(Token::Kind::Identifier, "Expected a parameter name.").text);
                     auto type = take(Token::Kind::Colon) ? annotation() : TypeAnnotation{};
                     result.parameterTypes.push_back(type.base);
+                    result.parameterTypeNames.push_back(type.nominal);
                     result.parameterElementTypes.push_back(type.element);
                 } while (take(Token::Kind::Comma));
                 expect(Token::Kind::RightParen, "Expected ')' after parameters.");
@@ -1714,6 +1796,7 @@ class CodeParser {
             if (take(Token::Kind::Arrow)) {
                 auto type = annotation();
                 result.returnType = type.base;
+                result.returnTypeName = type.nominal;
                 result.returnElementType = type.element;
             }
             expect(Token::Kind::Colon, "Expected ':' after function header.");
@@ -1955,6 +2038,7 @@ class KoreanAstParser {
                         field.name = trimLanguageText(head.substr(0, colon));
                         auto type = parseAnnotation(trimLanguageText(head.substr(colon + 1)));
                         field.declaredType = type.base;
+                        field.declaredTypeName = type.nominal;
                         field.elementType = type.element;
                         if (equal != std::string::npos)
                             field.expression = expr(trimLanguageText(raw.text.substr(equal + 1)));
@@ -1964,9 +2048,35 @@ class KoreanAstParser {
                 result.push_back(std::move(statement));
                 continue;
             }
+            static const std::regex safeFind(R"JM(^("(?:[^"\\]|\\.)*")를 ([^\s:]+)로 찾았다면:$)JM");
+            if (std::regex_match(text, match, safeFind)) {
+                Statement binding;
+                binding.kind = Statement::Kind::Variable;
+                binding.name = match[2].str();
+                if (expr(binding.name)->kind != Expression::Kind::Identifier)
+                    fail("찾았다면 바인딩에는 변수 이름이 필요합니다.");
+                binding.declaredType = Type::Optional;
+                binding.elementType = Type::Entity;
+                auto call = node(Expression::Kind::Call);
+                call->left = node(Expression::Kind::Member, "find");
+                call->left->left = node(Expression::Kind::Identifier, "scene");
+                call->builtinSymbolName = "builtin.scene.find";
+                call->builtinSymbolId = stableBuiltinSymbolId(call->builtinSymbolName);
+                call->left->builtinSymbolName = call->builtinSymbolName;
+                call->left->builtinSymbolId = call->builtinSymbolId;
+                call->arguments = {{"", expr(match[1].str())}};
+                binding.expression = call;
+                result.push_back(binding);
+                statement.kind = Statement::Kind::If;
+                statement.expression = binary(node(Expression::Kind::Identifier, binding.name),
+                                              "!=", node(Expression::Kind::Literal));
+                statement.body = nestedBlock(indent, statement.line);
+                result.push_back(std::move(statement));
+                continue;
+            }
             static const std::regex function(R"(^함수\s+([^\s(]+)\s*\(([^)]*)\)\s*(?:->\s*([^:]+?))?\s*:$)");
             static const std::regex variable(
-                R"(^(List<[^>]+>|Map<[^>]+>|숫자|정수|실수|문자열|논리|목록|지도|자동|Vector2|Vector3|Color|Tuple|Range)\s+(변수|상수)\s+(.+?)\s*(?:을|를)\s+(.+?)\s*(?:으로|로)\s*정한다\.?$)");
+                R"(^(List<[^>]+>|Map<[^>]+>|숫자|정수|실수|문자열|논리|목록|지도|자동|Vector2|Vector3|Color|Tuple|Range|[^\s]+)\s+(변수|상수)\s+(.+?)\s*(?:을|를)\s+(.+?)\s*(?:으로|로)\s*정한다\.?$)");
             if (std::regex_match(text, match, function)) {
                 statement.kind = Statement::Kind::Function;
                 statement.name = match[1].str();
@@ -2000,12 +2110,14 @@ class KoreanAstParser {
                                         ? TypeAnnotation{}
                                         : parseAnnotation(trimLanguageText(item.substr(colon + 1)));
                         statement.parameterTypes.push_back(type.base);
+                        statement.parameterTypeNames.push_back(type.nominal);
                         statement.parameterElementTypes.push_back(type.element);
                     }
                 }
                 if (match[3].matched) {
                     auto type = parseAnnotation(trimLanguageText(match[3].str()));
                     statement.returnType = type.base;
+                    statement.returnTypeName = type.nominal;
                     statement.returnElementType = type.element;
                 }
                 statement.body = nestedBlock(indent, line.number);
@@ -2013,13 +2125,14 @@ class KoreanAstParser {
                 continue;
             }
             static const std::regex declaration(
-                R"(^(List<[^>]+>|Map<[^>]+>|숫자|정수|실수|문자열|논리|목록|지도|Vector2|Vector3|Color|Tuple|Range) 변수 (.+?)(?:을|를) 선언한다\.$)");
+                R"(^(List<[^>]+>|Map<[^>]+>|숫자|정수|실수|문자열|논리|목록|지도|Vector2|Vector3|Color|Tuple|Range|[^\s]+) 변수 (.+?)(?:을|를) 선언한다\.$)");
             if (std::regex_match(text, match, declaration)) {
                 statement.kind = Statement::Kind::Variable;
                 statement.name = match[2].str();
                 {
                     auto type = parseAnnotation(match[1].str());
                     statement.declaredType = type.base;
+                    statement.declaredTypeName = type.nominal;
                     statement.elementType = type.element;
                 }
                 result.push_back(statement);
@@ -2032,6 +2145,7 @@ class KoreanAstParser {
                 {
                     auto type = parseAnnotation(match[1].str());
                     statement.declaredType = type.base;
+                    statement.declaredTypeName = type.nominal;
                     statement.elementType = type.element;
                 }
                 statement.expression = expr(match[4].str());
@@ -2214,6 +2328,7 @@ class Interpreter {
         : program_(program), options_(std::move(options)), host_(std::move(host)),
           globals_(std::make_shared<Environment>()),
           runtime_(jm_runtime_create_context(), jm_runtime_destroy_context) {
+        semanticHistory_ = program;
         for (const auto &[name, value] : options_.initialValues)
             globals_->declare(name, value);
         for (const Statement &statement : program_.statements) {
@@ -2229,7 +2344,10 @@ class Interpreter {
         if (!parseCode(source, parsed, diagnostic))
             throw std::runtime_error(diagnostic.message);
         std::vector<Diagnostic> errors;
-        if (!check(parsed, errors))
+        auto checking = semanticHistory_;
+        checking.statements.insert(checking.statements.end(), parsed.statements.begin(),
+                                   parsed.statements.end());
+        if (!check(checking, errors, options_.nativeMetadata.get()))
             throw std::runtime_error(errors.front().code + ": " + errors.front().message);
         if (!initialized_)
             select({}, {});
@@ -2262,8 +2380,71 @@ class Interpreter {
                     throw std::runtime_error("REPL statement cannot escape module scope.");
             }
         }
+        semanticHistory_.statements.swap(checking.statements);
         return {globals_, output_, executed_, last};
     }
+    bool replace(Program &running, Program candidate, Diagnostic &diagnostic) {
+        if (depth_ != 0 || !fragments_.empty()) {
+            diagnostic = {"JM7201: Hot swap requires an execution boundary."};
+            return false;
+        }
+        if (!hotSwapCompatible(running, candidate, diagnostic, options_.nativeMetadata.get()))
+            return false;
+        try {
+            auto state = std::make_shared<Environment>(*globals_);
+            std::unordered_map<std::string, const Statement *> oldGlobals, functions, structures;
+            for (auto &item : running.statements)
+                if (item.kind == Statement::Kind::Variable)
+                    oldGlobals[item.name] = &item;
+            for (auto &item : candidate.statements) {
+                if (item.kind == Statement::Kind::Function)
+                    functions.emplace(item.name, &item);
+                if (item.kind == Statement::Kind::Struct)
+                    structures.emplace(item.name, &item);
+                if (item.kind != Statement::Kind::Variable)
+                    continue;
+                auto old = oldGlobals.find(item.name);
+                bool changed = old == oldGlobals.end();
+                if (!changed) {
+                    Program a{{*old->second}}, b{{item}};
+                    changed = !structurallyEqual(a, b);
+                }
+                if (changed) {
+                    if (!item.expression || item.expression->kind != Expression::Kind::Literal)
+                        throw std::runtime_error("JM7202: Live initializer changes require literal values.");
+                    auto value = item.expression->literal;
+                    if (item.declaredType == Type::Optional)
+                        value = Value::optional(item.elementType, value, item.declaredTypeName);
+                    if (item.declaredType == Type::Float && value.type() == Type::Int)
+                        value = Value(number(value));
+                    if (old != oldGlobals.end()) {
+                        auto previous = state->get(item.name);
+                        if (previous.type() != value.type())
+                            throw std::runtime_error("JM7202: Live edit changes global type.");
+                        state->eraseLocal(item.name);
+                    }
+                    state->declare(item.name, value, item.constant);
+                }
+                oldGlobals.erase(item.name);
+            }
+            for (auto &[name, item] : oldGlobals)
+                state->eraseLocal(name);
+            auto history = candidate;
+            // All allocations/checks precede these noexcept swaps at a call/event boundary.
+            running.statements.swap(candidate.statements);
+            semanticHistory_.statements.swap(history.statements);
+            functions_.swap(functions);
+            structures_.swap(structures);
+            globals_.swap(state);
+            diagnostic = {};
+            return true;
+        } catch (const std::exception &error) {
+            diagnostic = {error.what()};
+            diagnostic.code = "JM7202";
+            return false;
+        }
+    }
+    std::map<std::string, std::string> inspect() const { return globals_->inspect(); }
     ExecutionResult select(std::string event, std::string entry) {
         options_.eventName = std::move(event);
         options_.entryFunction = std::move(entry);
@@ -2354,7 +2535,7 @@ class Interpreter {
         std::unordered_set<size_t> supplied;
         for (size_t i = 0; i < declaration.body.size(); ++i) {
             const auto &field = declaration.body[i];
-            result->schema[field.name] = {field.declaredType, field.elementType};
+            result->schema[field.name] = {field.declaredType, field.elementType, field.declaredTypeName};
         }
         for (size_t i = 0; i < args.size(); ++i) {
             size_t field = i;
@@ -2367,7 +2548,7 @@ class Interpreter {
             if (field >= declaration.body.size() || !supplied.insert(field).second)
                 throw std::runtime_error("Unknown or duplicate struct constructor field.");
             const auto &spec = declaration.body[field];
-            auto value = coerceElement(args[i], spec.declaredType);
+            auto value = coerceElement(args[i], spec.declaredType, spec.elementType, spec.declaredTypeName);
             if (spec.declaredType == Type::List)
                 typeList(value, spec.elementType);
             if (spec.declaredType == Type::Map)
@@ -2379,7 +2560,8 @@ class Interpreter {
                 const auto &spec = declaration.body[i];
                 if (!spec.expression)
                     throw std::runtime_error("Missing struct constructor field: " + spec.name);
-                auto value = coerceElement(eval(spec.expression, globals_), spec.declaredType);
+                auto value = coerceElement(eval(spec.expression, globals_), spec.declaredType,
+                                           spec.elementType, spec.declaredTypeName);
                 if (spec.declaredType == Type::List)
                     typeList(value, spec.elementType);
                 if (spec.declaredType == Type::Map)
@@ -2397,6 +2579,13 @@ class Interpreter {
             throw std::runtime_error("Missing assignment target.");
         if (target->kind == Expression::Kind::Identifier) {
             const auto current = env->get(target->text);
+            if (current.type() == Type::Optional) {
+                auto &old = *std::get<std::shared_ptr<OptionalValue>>(current.data);
+                value = Value::optional(old.element, value, old.nominal);
+                auto &box = *std::get<std::shared_ptr<OptionalValue>>(value.data);
+                if (box.schema.empty())
+                    box.schema = old.schema;
+            }
             if (current.type() == Type::Float && value.type() == Type::Int)
                 value = Value(number(value));
             if (current.type() != Type::Void && current.type() != value.type())
@@ -2414,8 +2603,17 @@ class Interpreter {
             env->assign(target->text, std::move(value));
             return;
         }
+        if (target->kind == Expression::Kind::Member && host_) {
+            auto receiver = eval(target->left, env).unwrap();
+            if (receiver.type() == Type::Entity) {
+                auto property = target->text;
+                property[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(property[0])));
+                host_("builtin.entity.set" + property, {receiver, value}, {});
+                return;
+            }
+        }
         if (target->kind == Expression::Kind::Index) {
-            const Value container = eval(target->left, env);
+            const Value container = eval(target->left, env).unwrap();
             const Value index = eval(target->right, env);
             if (auto list = std::get_if<Value::ArrayPtr>(&container.data)) {
                 const auto at = checkedIndex(index);
@@ -2441,12 +2639,13 @@ class Interpreter {
             throw std::runtime_error("Only a list or map item can be assigned.");
         }
         if (target->kind == Expression::Kind::Member) {
-            const Value container = eval(target->left, env);
+            const Value container = eval(target->left, env).unwrap();
             if (auto structure = std::get_if<Value::StructPtr>(&container.data)) {
                 auto found = (*structure)->schema.find(target->text);
                 if (found == (*structure)->schema.end())
                     throw std::runtime_error("Unknown struct field.");
-                value = coerceElement(value, found->second.base);
+                value =
+                    coerceElement(value, found->second.base, found->second.element, found->second.nominal);
                 if (found->second.base == Type::List)
                     typeList(value, found->second.element);
                 rejectCycle(value, (*structure)->fields.get());
@@ -2516,6 +2715,16 @@ class Interpreter {
                 default:
                     break;
                 }
+            if (statement.declaredType == Type::Optional) {
+                value = Value::optional(statement.elementType, value, statement.declaredTypeName);
+                if (statement.elementType == Type::Struct &&
+                    structures_.contains(statement.declaredTypeName)) {
+                    auto &box = *std::get<std::shared_ptr<OptionalValue>>(value.data);
+                    for (const auto &field : structures_.at(statement.declaredTypeName)->body)
+                        box.schema[field.name] = {field.declaredType, field.elementType,
+                                                  field.declaredTypeName};
+                }
+            }
             if (statement.declaredType == Type::Float && value.type() == Type::Int)
                 value = Value(number(value));
             if (statement.declaredType != Type::Any && value.type() != statement.declaredType)
@@ -2686,6 +2895,12 @@ class Interpreter {
         for (std::size_t i = 0; i < arguments.size(); ++i) {
             Value argument = arguments[i];
             const auto type = i < function.parameterTypes.size() ? function.parameterTypes[i] : Type::Any;
+            if (type == Type::Optional)
+                argument = Value::optional(
+                    function.parameterElementTypes.at(i), argument,
+                    i < function.parameterTypeNames.size() ? function.parameterTypeNames[i] : "");
+            if (type != Type::Optional && argument.type() == Type::Optional)
+                argument = argument.unwrap();
             if (type == Type::Float && argument.type() == Type::Int)
                 argument = Value(number(argument));
             if (type != Type::Any && type != argument.type()) {
@@ -2704,6 +2919,10 @@ class Interpreter {
         }
         Flow flow = runBlock(function.body, local, false);
         if (flow.kind == Flow::Kind::Return) {
+            if (function.returnType == Type::Optional)
+                flow.value = Value::optional(function.returnElementType, flow.value, function.returnTypeName);
+            if (function.returnType != Type::Optional && flow.value.type() == Type::Optional)
+                flow.value = flow.value.unwrap();
             if (function.returnType == Type::Float && flow.value.type() == Type::Int)
                 return Value(number(flow.value));
             if (function.returnType != Type::Any && function.returnType != flow.value.type())
@@ -2719,6 +2938,7 @@ class Interpreter {
         return {};
     }
     const Program &program_;
+    Program semanticHistory_;
     RunOptions options_;
     HostFunction host_;
     std::shared_ptr<Environment> globals_;
@@ -2751,8 +2971,46 @@ Value Value::map(Map value) {
     result.data = std::make_shared<Map>(std::move(value));
     return result;
 }
-bool Value::isNull() const { return std::holds_alternative<std::monostate>(data); }
+Value Value::optional(Type element, Value value, std::string nominal) {
+    if (element == Type::Struct && value.type() == Type::Struct) {
+        auto name = std::get<StructPtr>(value.data)->name;
+        if (!nominal.empty() && nominal != name)
+            throw std::runtime_error("JM2010: Named Optional Struct mismatch.");
+        nominal = name;
+    }
+    if (auto box = std::get_if<std::shared_ptr<OptionalValue>>(&value.data)) {
+        if ((*box)->element != element || (!nominal.empty() && (*box)->nominal != nominal))
+            throw std::runtime_error("JM2010: Optional payload type mismatch.");
+        return value;
+    }
+    if (element == Type::Float && value.type() == Type::Int)
+        value = Value(static_cast<double>(std::get<int64_t>(value.data)));
+    if (!value.isNull() && value.type() != element)
+        throw std::runtime_error("JM2010: Optional payload type mismatch.");
+    Value result;
+    result.data =
+        std::make_shared<OptionalValue>(OptionalValue{element, std::move(value), std::move(nominal), {}});
+    auto &box = *std::get<std::shared_ptr<OptionalValue>>(result.data);
+    if (box.value.type() == Type::Struct)
+        box.schema = std::get<StructPtr>(box.value.data)->schema;
+    return result;
+}
+Value Value::unwrap() const {
+    if (auto box = std::get_if<std::shared_ptr<OptionalValue>>(&data)) {
+        if ((*box)->value.isNull())
+            throw std::runtime_error("JM2011: Optional is empty; check != null before use.");
+        return (*box)->value;
+    }
+    return *this;
+}
+bool Value::isNull() const {
+    if (auto box = std::get_if<std::shared_ptr<OptionalValue>>(&data))
+        return (*box)->value.isNull();
+    return std::holds_alternative<std::monostate>(data);
+}
 std::string Value::typeName() const {
+    if (auto box = std::get_if<std::shared_ptr<OptionalValue>>(&data))
+        return annotationName(Type::Optional, (*box)->element, (*box)->nominal);
     switch (data.index()) {
     case 0:
         return "Null";
@@ -2789,6 +3047,8 @@ std::string Value::typeName() const {
     }
 }
 std::string Value::toString() const {
+    if (auto box = std::get_if<std::shared_ptr<OptionalValue>>(&data))
+        return (*box)->value.toString();
     if (isNull())
         return "null";
     if (auto value = std::get_if<std::int64_t>(&data))
@@ -3029,7 +3289,15 @@ bool structurallyEqual(const Program &left, const Program &right) {
                 x.constant != y.constant || x.fileImport != y.fileImport || x.parameters != y.parameters ||
                 x.declaredType != y.declaredType || x.returnType != y.returnType ||
                 x.parameterTypes != y.parameterTypes || x.elementType != y.elementType ||
-                x.returnElementType != y.returnElementType || ([&] {
+                x.returnElementType != y.returnElementType || x.declaredTypeName != y.declaredTypeName ||
+                x.returnTypeName != y.returnTypeName || ([&] {
+                    for (size_t j = 0; j < x.parameters.size(); ++j)
+                        if ((j < x.parameterTypeNames.size() ? x.parameterTypeNames[j] : "") !=
+                            (j < y.parameterTypeNames.size() ? y.parameterTypeNames[j] : ""))
+                            return true;
+                    return false;
+                }()) ||
+                ([&] {
                     for (size_t j = 0; j < x.parameters.size(); ++j)
                         if ((j < x.parameterElementTypes.size() ? x.parameterElementTypes[j] : Type::Any) !=
                             (j < y.parameterElementTypes.size() ? y.parameterElementTypes[j] : Type::Any))
@@ -3046,12 +3314,105 @@ bool structurallyEqual(const Program &left, const Program &right) {
     return sameStatements(left.statements, right.statements);
 }
 
+void Environment::eraseLocal(const std::string &name) { bindings_.erase(name); }
+std::map<std::string, std::string> Environment::inspect(std::size_t limit) const {
+    std::map<std::string, std::string> result;
+    for (const auto &[name, binding] : bindings_) {
+        if (result.size() >= limit)
+            break;
+        auto type = binding.value.type();
+        // Avoid traversing arbitrarily large containers on the render thread.
+        auto payloadType = type == Type::Optional
+                               ? std::get<std::shared_ptr<OptionalValue>>(binding.value.data)->element
+                               : type;
+        const Value &observed = type == Type::Optional
+                                    ? std::get<std::shared_ptr<OptionalValue>>(binding.value.data)->value
+                                    : binding.value;
+        auto text = payloadType == Type::List || payloadType == Type::Map || payloadType == Type::Struct ||
+                            payloadType == Type::Tuple
+                        ? "<aggregate>"
+                    : observed.type() == Type::String ? std::get<std::string>(observed.data).substr(0, 256)
+                                                      : observed.toString();
+        if (text.size() > 256)
+            text.resize(256);
+        result.emplace(name, binding.value.typeName() + ": " + text);
+    }
+    return result;
+}
+bool hotSwapCompatible(const Program &running, const Program &candidate, Diagnostic &diagnostic,
+                       const ir::NativeFunctionRegistry *registry) {
+    std::vector<Diagnostic> errors;
+    if (!check(candidate, errors, registry)) {
+        diagnostic = errors.front();
+        return false;
+    }
+    auto reject = [&](const std::string &message) {
+        diagnostic = {message};
+        diagnostic.code = "JM7202";
+        return false;
+    };
+    std::unordered_map<std::string, const Statement *> oldFunctions, newFunctions, oldGlobals;
+    Program oldDefinitions, newDefinitions;
+    for (auto &item : running.statements) {
+        if (item.kind == Statement::Kind::Function)
+            oldFunctions[item.name] = &item;
+        else if (item.kind == Statement::Kind::Variable)
+            oldGlobals[item.name] = &item;
+        else if (item.kind != Statement::Kind::Event)
+            oldDefinitions.statements.push_back(item);
+    }
+    for (auto &item : candidate.statements) {
+        if (item.kind == Statement::Kind::Function)
+            newFunctions[item.name] = &item;
+        else if (item.kind == Statement::Kind::Variable) {
+            if (oldGlobals.contains(item.name)) {
+                auto &old = *oldGlobals.at(item.name);
+                if (old.declaredType != item.declaredType || old.elementType != item.elementType ||
+                    old.declaredTypeName != item.declaredTypeName || old.constant != item.constant)
+                    return reject("JM7202: Global declaration type/constness changed: " + item.name);
+            }
+        } else if (item.kind != Statement::Kind::Event)
+            newDefinitions.statements.push_back(item);
+    }
+    if (!structurallyEqual(oldDefinitions, newDefinitions))
+        return reject("JM7202: Imports/type schemas/top-level actions cannot hot-swap.");
+    if (oldFunctions.size() != newFunctions.size())
+        return reject("JM7202: Function set changes are unsupported.");
+    for (auto &[name, old] : oldFunctions) {
+        if (std::any_of(old->parameterTypes.begin(), old->parameterTypes.end(),
+                        [](Type type) { return type == Type::Any; }))
+            return reject("JM7202: Live functions need concrete parameter annotations.");
+        if (!newFunctions.contains(name))
+            return reject("JM7202: Removed function: " + name);
+        auto a = *old, b = *newFunctions.at(name);
+        a.body.clear();
+        b.body.clear();
+        if (!structurallyEqual(Program{{a}}, Program{{b}}))
+            return reject("JM7202: Function signature changed: " + name);
+    }
+    diagnostic = {};
+    return true;
+}
 struct ExecutionSession::Impl {
     Program program;
+    std::uint64_t generation{1};
+    std::thread::id thread{std::this_thread::get_id()};
+    bool active{};
+    struct Guard {
+        bool &active;
+        ~Guard() { active = false; }
+    };
+    bool boundary() const { return std::this_thread::get_id() == thread && !active; }
+    Guard enter() {
+        if (!boundary())
+            throw std::runtime_error("JM7201: Session requires an execution boundary on its owner thread.");
+        active = true;
+        return Guard{active};
+    }
     std::unique_ptr<Interpreter> interpreter;
     Impl(Program value, RunOptions options, HostFunction host) : program(std::move(value)) {
         std::vector<Diagnostic> errors;
-        if (!check(program, errors))
+        if (!check(program, errors, options.nativeMetadata.get()))
             throw std::runtime_error(errors.front().code + ": " + errors.front().message);
         interpreter = std::make_unique<Interpreter>(program, std::move(options), std::move(host));
     }
@@ -3059,18 +3420,38 @@ struct ExecutionSession::Impl {
 ExecutionSession::ExecutionSession(Program program, RunOptions options, HostFunction host)
     : impl_(std::make_unique<Impl>(std::move(program), std::move(options), std::move(host))) {}
 ExecutionSession::~ExecutionSession() = default;
+bool ExecutionSession::hotSwap(Program candidate, Diagnostic &diagnostic) {
+    if (!impl_->boundary()) {
+        diagnostic = {"JM7201: Hot swap requires an owner-thread execution boundary."};
+        diagnostic.code = "JM7201";
+        return false;
+    }
+    if (!impl_->interpreter->replace(impl_->program, std::move(candidate), diagnostic))
+        return false;
+    ++impl_->generation;
+    return true;
+}
+std::uint64_t ExecutionSession::generation() const { return impl_->generation; }
+std::map<std::string, std::string> ExecutionSession::inspect() const {
+    if (!impl_->boundary())
+        throw std::runtime_error("JM7201: Inspection requires an owner-thread execution boundary.");
+    return impl_->interpreter->inspect();
+}
 ExecutionResult ExecutionSession::dispatch(const std::string &event) {
+    auto guard = impl_->enter();
     return impl_->interpreter->select(event, {});
 }
 ExecutionResult ExecutionSession::evaluate(const std::string &source) {
+    auto guard = impl_->enter();
     return impl_->interpreter->fragment(source);
 }
 ExecutionResult ExecutionSession::invoke(const std::string &entry) {
+    auto guard = impl_->enter();
     return impl_->interpreter->select({}, entry);
 }
 ExecutionResult execute(const Program &program, const RunOptions &options, const HostFunction &hostFunction) {
     std::vector<Diagnostic> diagnostics;
-    if (!check(program, diagnostics))
+    if (!check(program, diagnostics, options.nativeMetadata.get()))
         throw std::runtime_error(diagnostics.front().code + ": " + diagnostics.front().message);
     return Interpreter(program, options, hostFunction).run();
 }
