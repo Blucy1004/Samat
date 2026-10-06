@@ -4,6 +4,7 @@
 
 #include "JMEngine/Scene/Scene.hpp"
 #include "JMEngine/Script/Script.hpp"
+#include "JMEngine/Script/EngineScriptAPI.hpp"
 
 #include <filesystem>
 #include <memory>
@@ -30,6 +31,9 @@ public:
     Application& operator=(const Application&) = delete;
 
     std::size_t run(std::size_t maximumFrames = 0);
+    void startLanguagePlay(std::string source,bool korean=false);
+    void stopPlay();
+    bool isPlaying() const {return playing_;}
 
 private:
     void processEvents();
@@ -86,6 +90,8 @@ private:
     bool koreanEditMode_{false};
     bool languageCompiled_{false};
     bool languageKoreanSyntax_{false};
+    bool languagePlayEnabled_{false};
+    std::unique_ptr<EngineEventRuntime> languageRuntime_;
     bool spacePressedThisFrame_{false};
     std::unordered_set<std::string> keysPressedThisFrame_;
     bool tutorialCodeViewed_{false};

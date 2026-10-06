@@ -17,28 +17,28 @@ namespace {
 using namespace jm::script;
 using namespace jm::script::ir;
 std::size_t passed{}, skipped{};
-void require(bool value, const std::string& message) {
+void require(bool value, const std::string &message) {
     if (!value)
         throw std::runtime_error(message);
 }
-Program parse(const std::string& source) {
+Program parse(const std::string &source) {
     Program program;
     Diagnostic diagnostic;
     require(parseCode(source, program, diagnostic), "Parse failed: " + diagnostic.message + "\n" + source);
     return program;
 }
-Module lowerProgram(const Program& program) {
+Module lowerProgram(const Program &program) {
     Module module;
     LoweringDiagnostic diagnostic;
     require(lower(program, module, diagnostic), "Lowering failed: " + diagnostic.message);
     return module;
 }
-Value interpret(const Program& program) {
+Value interpret(const Program &program) {
     RunOptions options;
     options.entryFunction = "main";
     return execute(program, options).returnValue;
 }
-void roundTrip(const Program& program) {
+void roundTrip(const Program &program) {
     Program korean, code;
     Diagnostic diagnostic;
     const auto koreanText = renderKorean(program);
@@ -48,17 +48,17 @@ void roundTrip(const Program& program) {
     require(parseCode(renderCode(korean), code, diagnostic), "Code renderer parse failed.");
     require(structurallyEqual(korean, code), "Korean/Code shared AST mismatch.");
 }
-void fault(const std::string& source, const std::string& fragment) {
+void fault(const std::string &source, const std::string &fragment) {
     bool failed = false;
     try {
         (void)interpret(parse(source));
-    } catch (const std::exception& error) {
+    } catch (const std::exception &error) {
         failed = std::string(error.what()).find(fragment) != std::string::npos;
     }
     require(failed, "Expected diagnostic containing: " + fragment);
     ++passed;
 }
-void scalar(const std::string& name, const std::string& source, const std::string& expected,
+void scalar(const std::string &name, const std::string &source, const std::string &expected,
             bool bootstrap = true) {
     auto program = parse(source);
     require(interpret(program).toString() == expected, name + ": Interpreter result differs.");
@@ -86,7 +86,7 @@ void scalar(const std::string& name, const std::string& source, const std::strin
     ++passed;
     std::cout << "PASS " << name << '\n';
 }
-void interpreterOnly(const std::string& name, const std::string& source, const std::string& expected) {
+void interpreterOnly(const std::string &name, const std::string &source, const std::string &expected) {
     auto program = parse(source);
     roundTrip(program);
     require(interpret(program).toString() == expected, name + ": result differs.");
@@ -145,7 +145,7 @@ void verifier() {
     branch.functions[0].blocks[0].terminator = {Terminator::Kind::Branch, 0, 999, 0};
     require(!verify(branch, diagnostic), "Invalid target accepted.");
     auto local = original;
-    for (auto& in : local.functions[0].blocks[0].instructions)
+    for (auto &in : local.functions[0].blocks[0].instructions)
         if (in.op == Op::Load)
             in.local = 999;
     require(!verify(local, diagnostic), "Invalid local accepted.");
@@ -156,7 +156,7 @@ void verifier() {
     type.functions[0].returnType = Type::Float;
     require(!verify(type, diagnostic), "Return mismatch accepted.");
     auto call = lowerProgram(parse("fn add(a):\n    return a\nfn main():\n    return add(1)\n"));
-    for (auto& in : call.functions[1].blocks[0].instructions)
+    for (auto &in : call.functions[1].blocks[0].instructions)
         if (in.op == Op::Call)
             in.arguments.clear();
     require(!verify(call, diagnostic), "Call arity mismatch accepted.");
@@ -175,8 +175,8 @@ void callbacks() {
          {Type::Int},
          Type::Int},
         [](std::int64_t a, std::int64_t, std::int64_t, std::int64_t) { return a + 100; });
-    HostFunction host = [](const std::string& name, const std::vector<Value>& args,
-                           const std::vector<std::string>&) -> Value {
+    HostFunction host = [](const std::string &name, const std::vector<Value> &args,
+                           const std::vector<std::string> &) -> Value {
         if (name == "builtin.player.jump")
             return Value(std::get<std::int64_t>(args.at(0).data) + 100);
         throw std::out_of_range("Unbound");
@@ -190,14 +190,14 @@ void callbacks() {
     ++passed;
 }
 void nativeErrors() {
-    for (const auto& source : {"fn bad():\n    return 1 / 0\nfn main():\n    return bad() + 42\n",
+    for (const auto &source : {"fn bad():\n    return 1 / 0\nfn main():\n    return bad() + 42\n",
                                "fn main():\n    return -9223372036854775808 / -1\n"}) {
         const auto module = lowerProgram(parse(source));
-        auto checkError = [&](const auto& native) {
+        auto checkError = [&](const auto &native) {
             bool failed = false;
             try {
                 native.invokeValue("main");
-            } catch (const std::exception& error) {
+            } catch (const std::exception &error) {
                 failed = std::string(error.what()).find("JM300") != std::string::npos;
             }
             require(failed, "Native arithmetic fault must return a diagnostic.");
@@ -212,11 +212,19 @@ void nativeErrors() {
     auto wrong = parse("fn main():\n    return player.move(speed: 8, direction: 1)\n");
     auto module = lowerProgram(wrong);
     NativeFunctionRegistry registry;
-    registry.registerFunction({"builtin.player.move", "player.move", "플레이어.이동", "Metadata order test", {"direction", "speed"}, {Type::Int, Type::Int}, Type::Int}, [](std::int64_t,std::int64_t,std::int64_t,std::int64_t){return std::int64_t{0};});
+    registry.registerFunction(
+        {"builtin.player.move",
+         "player.move",
+         "플레이어.이동",
+         "Metadata order test",
+         {"direction", "speed"},
+         {Type::Int, Type::Int},
+         Type::Int},
+        [](std::int64_t, std::int64_t, std::int64_t, std::int64_t) { return std::int64_t{0}; });
     bool rejected = false;
     try {
         X64Backend{}.compile(module, registry);
-    } catch (const std::exception&) {
+    } catch (const std::exception &) {
         rejected = true;
     }
     require(rejected, "Named argument order must not silently change semantics.");
@@ -234,7 +242,7 @@ void engineEvents() {
     auto registry = jm::engineNativeFunctions();
     auto simulate = [&](int backend) {
         jm::Scene scene;
-        auto& player = scene.create(jm::ObjectKind::Sprite2D);
+        auto &player = scene.create(jm::ObjectKind::Sprite2D);
         player.position.x = 0;
         player.grounded = true;
         const auto id = player.id;
@@ -244,7 +252,7 @@ void engineEvents() {
         jm::EngineScriptScope scope(context);
         if (backend == 0) {
             RunOptions options;
-            options.moduleResolver=jm::engineModuleResolver();
+            options.moduleResolver = jm::engineModuleResolver();
             options.eventName = "key.right.held";
             execute(program, options, host);
             options.eventName = "key.space.pressed";
@@ -255,7 +263,7 @@ void engineEvents() {
             jm::executeNativeEvent(module, code, "key.right.held");
             jm::executeNativeEvent(module, code, "key.space.pressed");
         }
-        auto* result = context.player();
+        auto *result = context.player();
         require(result && std::abs(result->position.x - 2.0F) < 0.0001F && result->verticalVelocity == 12 &&
                     !result->grounded,
                 "Real engine movement/jump event regression failed.");
@@ -269,7 +277,8 @@ void engineEvents() {
     std::cout << "PASS real Scene movement/jump: shared Code/Korean event AST, Interpreter/bootstrap"
               << (LLVMBackend::available() ? "/LLVM" : "; LLVM capability skip") << '\n';
 #else
-    ++skipped;std::cout<<"CAPABILITY SKIP engine events: standalone language build\n";
+    ++skipped;
+    std::cout << "CAPABILITY SKIP engine events: standalone language build\n";
 #endif
 }
 void differential() {
@@ -300,7 +309,7 @@ void differential() {
         llvm = LLVMBackend{}.compile(module);
         llvmO = LLVMBackend{true}.compile(optimized);
     }
-    for (const auto& [name, expectedValue] : expected) {
+    for (const auto &[name, expectedValue] : expected) {
         RunOptions options;
         options.entryFunction = name;
         auto result = execute(program, options).returnValue.toString();
@@ -319,7 +328,10 @@ void differential() {
 int main() {
     try {
         scalar("return42", "fn main():\n    return 42\n", "42");
-        scalar("Unicode identifiers", "fn 합계(이름을: Int) -> Int:\n    let 점수를: Int = 이름을\n    점수를 += 2\n    return 점수를\nfn main():\n    return 합계(40)\n", "42");
+        scalar("Unicode identifiers",
+               "fn 합계(이름을: Int) -> Int:\n    let 점수를: Int = 이름을\n    점수를 += 2\n    return "
+               "점수를\nfn main():\n    return 합계(40)\n",
+               "42");
         scalar("arithmetic", "fn main():\n    return (10 + 20) * 3\n", "90");
         scalar("comparison", "fn main() -> Bool:\n    return 10 < 20\n", "true");
         scalar("short circuit",
@@ -381,15 +393,14 @@ int main() {
         scalar("exact i64", "fn main():\n    return 9007199254740993 + 2\n", "9007199254740995");
         scalar("minimum i64", "fn main():\n    return -9223372036854775808\n", "-9223372036854775808");
         scalar("wrapping i64", "fn main():\n    return 9223372036854775807 + 1\n", "-9223372036854775808");
-        interpreterOnly(
-            "string concatenation",
-            "fn main() -> String:\n    let name: String = \"JM\"\n    return name + \" Engine\"\n",
-            "JM Engine");
-        interpreterOnly(
+        scalar("string concatenation",
+               "fn main() -> String:\n    let name: String = \"JM\"\n    return name + \" Engine\"\n",
+               "JM Engine", false);
+        scalar(
             "list read write push pop",
             "fn main():\n    let values: List = [1, 2, 3]\n    values[1] = 10\n    values.push(4)\n    let "
             "last = values.pop()\n    return values[1] + last + values.length\n",
-            "17");
+            "17", false);
         scalar("stdlib module",
                "import jm.math\nfn main() -> Float:\n    return sqrt(81) + clamp(20, 0, 5)\n", "14", false);
         fault("fn bad(x: Void):\n    return 0\nfn main():\n    return 0\n", "JM2003");
@@ -409,7 +420,7 @@ int main() {
         bool stopped = false;
         try {
             execute(infinite, bounded);
-        } catch (const std::exception& e) {
+        } catch (const std::exception &e) {
             stopped = std::string(e.what()).find("instruction budget") != std::string::npos;
         }
         require(stopped, "Infinite loop budget failed.");
@@ -418,7 +429,7 @@ int main() {
         stopped = false;
         try {
             execute(infinite, bounded);
-        } catch (const std::exception& e) {
+        } catch (const std::exception &e) {
             stopped = std::string(e.what()).find("stopped") != std::string::npos;
         }
         require(stopped, "Cancellation failed.");
@@ -428,6 +439,15 @@ int main() {
         require(!parseCode("fn main():\n    return (1 + )\n", malformed, diagnostic) && diagnostic.line == 2,
                 "Malformed source line diagnostic missing.");
         ++passed;
+        scalar("bitwise operators", "fn main():\n    return bitXor((~0 & 63), 21) | 0\n", "42");
+        scalar("checked shifts", "fn main():\n    return (5 << 3) + (-8 >> 2) + 4\n", "42");
+        scalar("numeric conversions", "fn main():\n    return int(float(40) + 2.9)\n", "42", false);
+        scalar("right associative exponent", "fn main() -> Float:\n    return 2.0 ** 3.0 ** 2.0\n", "512",
+               false);
+        scalar("modulo assignment", "fn main():\n    let value = 142\n    value %= 100\n    return value\n",
+               "42");
+        fault("fn main():\n    return 1 << 64\n", "JM3004");
+        fault("fn main():\n    return int(pow(2.0, 63.0))\n", "JM3005");
         verifier();
         callbacks();
         nativeErrors();
@@ -437,7 +457,7 @@ int main() {
         std::cout << "Compiler regression: " << passed << " checks passed; " << skipped
                   << " capability skips.\n";
         return 0;
-    } catch (const std::exception& error) {
+    } catch (const std::exception &error) {
         std::cerr << "FAIL after " << passed << " checks: " << error.what() << '\n';
         return 1;
     }

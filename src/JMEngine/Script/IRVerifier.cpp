@@ -1,4 +1,5 @@
 #include "JMEngine/Script/JMIR.hpp"
+#include "JMEngine/Script/RuntimeABI.h"
 #include <algorithm>
 #include <bit>
 #include <limits>
@@ -8,9 +9,10 @@
 namespace jm::script::ir {
 namespace {
 bool store(Op op) { return op == Op::Store || op == Op::GlobalStore; }
-std::vector<ValueId> operands(const Instruction& in) {
+std::vector<ValueId> operands(const Instruction &in) {
     switch (in.op) {
     case Op::Constant:
+    case Op::StringConstant:
     case Op::FloatConstant:
     case Op::Load:
     case Op::GlobalLoad:
@@ -20,33 +22,36 @@ std::vector<ValueId> operands(const Instruction& in) {
     case Op::Negate:
     case Op::LogicalNot:
     case Op::ToBoolean:
+    case Op::FloatToInt:
+    case Op::BitNot:
     case Op::IntToFloat:
         return {in.left};
+    case Op::RuntimeCall:
     case Op::Call:
         return in.arguments;
     default:
         return {in.left, in.right};
     }
 }
-void require(bool condition, const std::string& message) {
+void require(bool condition, const std::string &message) {
     if (!condition)
         throw std::runtime_error("JM4001: " + message);
 }
 } // namespace
-bool verify(const Module& module, LoweringDiagnostic& diagnostic) {
+bool verify(const Module &module, LoweringDiagnostic &diagnostic) {
     try {
         require(!module.functions.empty(), "Module has no functions.");
-        std::unordered_map<std::string, const Function*> functions;
-        std::unordered_map<std::string, const Global*> globals;
-        for (const auto& global : module.globals)
+        std::unordered_map<std::string, const Function *> functions;
+        std::unordered_map<std::string, const Global *> globals;
+        for (const auto &global : module.globals)
             require(globals.emplace(global.name, &global).second, "Duplicate global: " + global.name);
-        for (const auto& fn : module.functions)
+        for (const auto &fn : module.functions)
             require(functions.emplace(fn.name, &fn).second, "Duplicate function: " + fn.name);
-        for (const auto& event : module.events)
+        for (const auto &event : module.events)
             require(functions.contains(event.function) && functions.at(event.function)->parameterCount == 0 &&
                         functions.at(event.function)->returnType == Type::Void,
                     "Invalid event handler binding.");
-        for (const auto& fn : module.functions) {
+        for (const auto &fn : module.functions) {
             const auto n = fn.blocks.size();
             require(n > 0, "Function has no entry block: " + fn.name);
             require(fn.localTypes.size() == fn.localCount && fn.valueTypes.size() == fn.valueCount,
@@ -54,13 +59,14 @@ bool verify(const Module& module, LoweringDiagnostic& diagnostic) {
             require(fn.parameterTypes.size() == fn.parameterCount && fn.parameterCount <= fn.localCount,
                     "Invalid parameters in " + fn.name);
             for (std::size_t i = 0; i < fn.parameterCount; ++i)
-                require(fn.parameterTypes[i] == fn.localTypes[i] && fn.parameterTypes[i] != Type::Void, "Parameter/local type mismatch or Void parameter.");
+                require(fn.parameterTypes[i] == fn.localTypes[i] && fn.parameterTypes[i] != Type::Void,
+                        "Parameter/local type mismatch or Void parameter.");
             std::vector<std::vector<BlockId>> predecessors(n), successors(n);
             std::unordered_map<ValueId, std::pair<BlockId, std::size_t>> definitions;
             for (std::size_t b = 0; b < n; ++b) {
-                const auto& block = fn.blocks[b];
+                const auto &block = fn.blocks[b];
                 require(block.id == b, "Block IDs must match their canonical index.");
-                const auto& term = block.terminator;
+                const auto &term = block.terminator;
                 require(term.kind != Terminator::Kind::None, "Block has no terminator: " + block.name);
                 if (term.kind == Terminator::Kind::Branch ||
                     term.kind == Terminator::Kind::ConditionalBranch) {
@@ -74,8 +80,8 @@ bool verify(const Module& module, LoweringDiagnostic& diagnostic) {
                     }
                 }
                 for (std::size_t i = 0; i < block.instructions.size(); ++i) {
-                    const auto& in = block.instructions[i];
-                    require(in.op >= Op::Constant && in.op <= Op::GlobalStore, "Invalid opcode.");
+                    const auto &in = block.instructions[i];
+                    require(in.op >= Op::Constant && in.op <= Op::RuntimeCall, "Invalid opcode.");
                     if (!store(in.op)) {
                         require(in.result < fn.valueCount, "Invalid result value.");
                         require(definitions.emplace(in.result, std::pair{block.id, i}).second,
@@ -96,9 +102,11 @@ bool verify(const Module& module, LoweringDiagnostic& diagnostic) {
                             require(in.type == target->second->returnType,
                                     "Call return type mismatch: " + in.symbol);
                         } else
-                            require(in.symbol.rfind("builtin.", 0) == 0 &&
-                                        in.symbolId == stableBuiltinSymbolId(in.symbol),
-                                    "Unknown function: " + in.symbol);
+                            require(
+                                (in.symbol.rfind("builtin.", 0) == 0 ||
+                                 (!in.symbol.empty() && in.symbolId == stableBuiltinSymbolId(in.symbol))) &&
+                                    in.symbolId == stableBuiltinSymbolId(in.symbol),
+                                "Unknown function: " + in.symbol);
                     }
                 }
             }
@@ -151,26 +159,107 @@ bool verify(const Module& module, LoweringDiagnostic& diagnostic) {
                             "Value definition does not dominate its use.");
                 return fn.valueTypes[id];
             };
-            for (const auto& block : fn.blocks) {
+            for (const auto &block : fn.blocks) {
                 for (std::size_t i = 0; i < block.instructions.size(); ++i) {
-                    const auto& in = block.instructions[i];
+                    const auto &in = block.instructions[i];
                     for (auto id : operands(in))
                         operand(id, block.id, i);
                     if (in.op == Op::Load || in.op == Op::Store)
                         require(in.type == fn.localTypes[in.local], "Local access type mismatch.");
                     if (in.op == Op::Store)
-                        require(fn.valueTypes[in.left] == fn.localTypes[in.local], "Store operand type mismatch.");
+                        require(fn.valueTypes[in.left] == fn.localTypes[in.local],
+                                "Store operand type mismatch.");
                     if (in.op == Op::GlobalLoad || in.op == Op::GlobalStore) {
                         require(in.type == globals.at(in.symbol)->type, "Global access type mismatch.");
                         if (in.op == Op::GlobalStore)
                             require(fn.valueTypes[in.left] == in.type, "Global store operand type mismatch.");
                     }
+                    if (in.op == Op::FloatToInt)
+                        require(fn.valueTypes[in.left] == Type::Float && in.type == Type::Int,
+                                "Invalid Float-to-Int conversion.");
+                    if (in.op >= Op::BitAnd && in.op <= Op::ShiftRight)
+                        require(in.type == Type::Int && fn.valueTypes[in.left] == Type::Int &&
+                                    (in.op == Op::BitNot || fn.valueTypes[in.right] == Type::Int),
+                                "Bitwise operands must be Int.");
                     if (in.op == Op::IntToFloat)
                         require(fn.valueTypes[in.left] == Type::Int && in.type == Type::Float,
                                 "Invalid numeric conversion.");
                     if (in.op == Op::Constant)
                         require(in.type == Type::Int || in.type == Type::Bool,
                                 "Invalid integer constant type.");
+                    if (in.op == Op::StringConstant)
+                        require(in.type == Type::String, "Invalid string constant type.");
+                    if (in.op == Op::RuntimeCall) {
+                        require(in.immediate >= JM_RT_CONCAT && in.immediate <= JM_RT_LIST_EQUAL,
+                                "Invalid runtime operation.");
+                        auto op = in.immediate;
+                        size_t count = 1;
+                        if (op == JM_RT_CONCAT || op == JM_RT_EQUAL || op == JM_RT_COMPARE ||
+                            op == JM_RT_INDEX || op == JM_RT_CONTAINS || op == JM_RT_STARTS_WITH ||
+                            op == JM_RT_ENDS_WITH || op == JM_RT_FIND || op == JM_RT_SPLIT ||
+                            op == JM_RT_LIST_REMOVE_AT || op == JM_RT_TO_STRING || op == JM_RT_PRINT ||
+                            op == JM_RT_PRINTLN)
+                            count = 2;
+                        if (op == JM_RT_LENGTH || op == JM_RT_SUBSTRING || op == JM_RT_REPLACE ||
+                            op == JM_RT_LIST_GET || op == JM_RT_LIST_SET || op == JM_RT_LIST_PUSH ||
+                            op == JM_RT_LIST_POP || op == JM_RT_LIST_CONTAINS || op == JM_RT_LIST_INDEX_OF ||
+                            op == JM_RT_LIST_INSERT)
+                            count = 3;
+                        if (op >= JM_RT_TRUNC && op <= JM_RT_TIME_ELAPSED)
+                            count =
+                                op == JM_RT_ATAN2 || op == JM_RT_RANDOM_INT || op == JM_RT_RANDOM_FLOAT  ? 2
+                                : op == JM_RT_LERP || op == JM_RT_SMOOTHSTEP                             ? 3
+                                : op == JM_RT_RANDOM || op == JM_RT_TIME_NOW || op == JM_RT_TIME_ELAPSED ? 0
+                                                                                                         : 1;
+                        if (op == JM_RT_LIST_EQUAL)
+                            count = 2;
+                        require(in.arguments.size() == count, "Runtime ABI argument count mismatch.");
+                        auto arg = [&](size_t index) { return fn.valueTypes[in.arguments.at(index)]; };
+                        if ((op >= JM_RT_CONCAT && op <= JM_RT_LOWER) || op == JM_RT_CODEPOINT_LENGTH ||
+                            op == JM_RT_PARSE_INT || op == JM_RT_PARSE_FLOAT)
+                            require(arg(0) == Type::String || (op == JM_RT_LENGTH && arg(0) == Type::List),
+                                    "Runtime string receiver mismatch.");
+                        if ((op >= JM_RT_LIST_GET && op <= JM_RT_LIST_REMOVE_AT) || op == JM_RT_LIST_CLONE)
+                            require(arg(0) == Type::List, "Runtime list receiver mismatch.");
+                        if (op == JM_RT_INDEX || op == JM_RT_SUBSTRING || op == JM_RT_LIST_GET ||
+                            op == JM_RT_LIST_SET || op == JM_RT_LIST_INSERT || op == JM_RT_LIST_REMOVE_AT)
+                            require(arg(1) == Type::Int, "Runtime index must be Int.");
+                        if (op == JM_RT_CONCAT || op == JM_RT_EQUAL || op == JM_RT_COMPARE ||
+                            op == JM_RT_CONTAINS || op == JM_RT_STARTS_WITH || op == JM_RT_ENDS_WITH ||
+                            op == JM_RT_FIND || op == JM_RT_REPLACE || op == JM_RT_SPLIT)
+                            require(arg(1) == Type::String, "Runtime string operand mismatch.");
+                        if (op == JM_RT_REPLACE)
+                            require(arg(2) == Type::String, "Runtime replace operand mismatch.");
+                        if (op == JM_RT_SUBSTRING)
+                            require(arg(2) == Type::Int, "Runtime substring count must be Int.");
+                        if (op >= JM_RT_TRUNC && op <= JM_RT_TIME_ELAPSED) {
+                            for (size_t i = 0; i < count; ++i)
+                                require(arg(i) == (op == JM_RT_SEED || op == JM_RT_RANDOM_INT ? Type::Int
+                                                                                              : Type::Float),
+                                        "Runtime numeric argument mismatch.");
+                            require(in.type == (op == JM_RT_SEED         ? Type::Void
+                                                : op == JM_RT_RANDOM_INT ? Type::Int
+                                                                         : Type::Float),
+                                    "Runtime numeric result mismatch.");
+                        }
+                        if (op == JM_RT_LIST_EQUAL)
+                            require(arg(0) == Type::List && arg(1) == Type::List && in.type == Type::Bool,
+                                    "Runtime list equality type mismatch.");
+                        if (op == JM_RT_LIST_CREATE)
+                            require(arg(0) == Type::Int && in.type == Type::List,
+                                    "Runtime list creation mismatch.");
+                        if (op == JM_RT_CONCAT || op == JM_RT_INDEX || op == JM_RT_SUBSTRING ||
+                            op == JM_RT_REPLACE || op == JM_RT_TRIM || op == JM_RT_UPPER ||
+                            op == JM_RT_LOWER || op == JM_RT_TO_STRING)
+                            require(in.type == Type::String, "Runtime String result mismatch.");
+                        if (op == JM_RT_EQUAL || op == JM_RT_CONTAINS || op == JM_RT_STARTS_WITH ||
+                            op == JM_RT_ENDS_WITH || op == JM_RT_LIST_CONTAINS)
+                            require(in.type == Type::Bool, "Runtime Bool result mismatch.");
+                        if (op == JM_RT_LIST_PUSH || op == JM_RT_LIST_SET || op == JM_RT_LIST_CLEAR ||
+                            op == JM_RT_LIST_REVERSE || op == JM_RT_LIST_SORT || op == JM_RT_LIST_INSERT ||
+                            op == JM_RT_PRINT || op == JM_RT_PRINTLN)
+                            require(in.type == Type::Void, "Runtime Void result mismatch.");
+                    }
                     if (in.op == Op::FloatConstant)
                         require(in.type == Type::Float, "Invalid float constant type.");
                     if (in.op == Op::Negate)
@@ -203,7 +292,7 @@ bool verify(const Module& module, LoweringDiagnostic& diagnostic) {
                                     (in.type == Type::Int || in.type == Type::Float),
                                 "Invalid arithmetic operand type.");
                 }
-                const auto& term = block.terminator;
+                const auto &term = block.terminator;
                 if (term.kind == Terminator::Kind::Return ||
                     term.kind == Terminator::Kind::ConditionalBranch) {
                     auto type = operand(term.value, block.id, block.instructions.size());
@@ -217,20 +306,20 @@ bool verify(const Module& module, LoweringDiagnostic& diagnostic) {
         }
         diagnostic.message.clear();
         return true;
-    } catch (const std::exception& error) {
+    } catch (const std::exception &error) {
         diagnostic.message = error.what();
         return false;
     }
 }
-Module optimize(const Module& module) {
+Module optimize(const Module &module) {
     LoweringDiagnostic diagnostic;
     if (!verify(module, diagnostic))
         throw std::runtime_error(diagnostic.message);
     Module result = module;
-    for (auto& fn : result.functions) {
+    for (auto &fn : result.functions) {
         std::unordered_map<ValueId, std::int64_t> constants;
-        for (auto& block : fn.blocks)
-            for (auto& in : block.instructions) {
+        for (auto &block : fn.blocks)
+            for (auto &in : block.instructions) {
                 if (in.op == Op::Constant) {
                     constants[in.result] = in.immediate;
                     continue;

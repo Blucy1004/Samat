@@ -14,10 +14,41 @@ namespace jm::script::ir {
 using ValueId = std::uint32_t;
 using BlockId = std::uint32_t;
 
-enum class Op { Constant, Load, Store, Add, Subtract, Multiply, Divide, Modulo,
-                Negate, LogicalNot, ToBoolean, Equal, NotEqual, Less, LessEqual, Greater,
-                GreaterEqual, BooleanAnd, BooleanOr, Call, FloatConstant, IntToFloat,
-                GlobalLoad, GlobalStore };
+enum class Op {
+    Constant,
+    Load,
+    Store,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Modulo,
+    Negate,
+    LogicalNot,
+    ToBoolean,
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    BooleanAnd,
+    BooleanOr,
+    Call,
+    FloatConstant,
+    IntToFloat,
+    GlobalLoad,
+    GlobalStore,
+    FloatToInt,
+    BitAnd,
+    BitOr,
+    BitXor,
+    BitNot,
+    ShiftLeft,
+    ShiftRight,
+    StringConstant,
+    RuntimeCall
+};
 
 struct Instruction {
     Op op{Op::Constant};
@@ -55,86 +86,112 @@ struct Function {
     std::uint32_t valueCount{};
     std::vector<BasicBlock> blocks;
     Type returnType{Type::Int};
-    std::vector<Type> parameterTypes, localTypes, valueTypes;
+    std::vector<Type> parameterTypes, localTypes, valueTypes, parameterElementTypes;
+    Type returnElementType{Type::Any};
 };
 
-struct Global { std::string name; Type type{Type::Int}; bool constant{}; };
-struct EventBinding { std::string event, function; };
-struct Module { std::vector<Function> functions; std::vector<Global> globals; std::vector<EventBinding> events; std::vector<std::string> imports; };
-struct LoweringDiagnostic { std::string message; };
+struct Global {
+    std::string name;
+    Type type{Type::Int};
+    bool constant{};
+};
+struct EventBinding {
+    std::string event, function;
+};
+struct Module {
+    std::vector<Function> functions;
+    std::vector<Global> globals;
+    std::vector<EventBinding> events;
+    std::vector<std::string> imports;
+};
+struct LoweringDiagnostic {
+    std::string message;
+};
 
-bool lower(const Program& program, Module& output, LoweringDiagnostic& diagnostic);
-std::string format(const Module& module);
-bool verify(const Module& module, LoweringDiagnostic& diagnostic);
-Module optimize(const Module& module);
+class NativeFunctionRegistry;
+bool lower(const Program &program, Module &output, LoweringDiagnostic &diagnostic,
+           const NativeFunctionRegistry *registry = nullptr);
+std::string format(const Module &module);
+bool verify(const Module &module, LoweringDiagnostic &diagnostic);
+Module optimize(const Module &module);
 
 class NativeCode {
-public:
-    using Entry = std::int64_t(*)(std::int64_t, std::int64_t, std::int64_t, std::int64_t);
+  public:
+    using Entry = std::int64_t (*)(std::int64_t, std::int64_t, std::int64_t, std::int64_t);
     NativeCode() = default;
-    NativeCode(const NativeCode&) = delete;
-    NativeCode& operator=(const NativeCode&) = delete;
-    NativeCode(NativeCode&& other) noexcept;
-    NativeCode& operator=(NativeCode&& other) noexcept;
+    NativeCode(const NativeCode &) = delete;
+    NativeCode &operator=(const NativeCode &) = delete;
+    NativeCode(NativeCode &&other) noexcept;
+    NativeCode &operator=(NativeCode &&other) noexcept;
     ~NativeCode();
 
-    std::int64_t invoke(const std::string& function,
-                        const std::vector<std::int64_t>& arguments = {}) const;
-    const std::vector<std::uint8_t>& machineCode(const std::string& function) const;
+    std::int64_t invoke(const std::string &function, const std::vector<std::int64_t> &arguments = {}) const;
+    const std::vector<std::uint8_t> &machineCode(const std::string &function) const;
     bool empty() const { return memory_ == nullptr && !invoker_; }
-    Value invokeValue(const std::string& function, const std::vector<Value>& arguments = {}) const;
+    Value invokeValue(const std::string &function, const std::vector<Value> &arguments = {}) const;
 
-private:
+  private:
     friend class X64Backend;
     friend class LLVMBackend;
-    void* memory_{};
+    void *memory_{};
     std::size_t memorySize_{};
     std::unordered_map<std::string, std::size_t> offsets_;
     std::unordered_map<std::string, std::vector<std::uint8_t>> code_;
     std::unordered_map<std::string, std::uint32_t> arities_;
     std::unordered_map<std::string, Type> returnTypes_;
-    std::function<Value(const std::string&, const std::vector<Value>&)> invoker_;
+    std::function<Value(const std::string &, const std::vector<Value> &)> invoker_;
 };
 
 class NativeBackend {
-public:
+  public:
     virtual ~NativeBackend() = default;
     virtual std::string targetTriple() const = 0;
-    virtual NativeCode compile(const Module& module, const class NativeFunctionRegistry& registry) const = 0;
+    virtual NativeCode compile(const Module &module, const class NativeFunctionRegistry &registry) const = 0;
 };
 
 class NativeFunctionRegistry {
-public:
+  public:
     struct Metadata {
         std::string symbol, displayName, koreanName, documentation;
         std::vector<std::string> parameterNames;
         std::vector<Type> parameterTypes;
         Type returnType{Type::Int};
     };
-    using Function = std::int64_t(*)(std::int64_t, std::int64_t, std::int64_t, std::int64_t);
+    using TypedFunction = std::function<Value(const std::vector<Value> &)>;
+    struct TypedBinding {
+        Metadata metadata;
+        TypedFunction function;
+    };
+    void registerTypedFunction(Metadata metadata, TypedFunction function);
+    const TypedBinding *typed(std::uint64_t symbol) const;
+    std::vector<Metadata> allMetadata() const;
+    using Function = std::int64_t (*)(std::int64_t, std::int64_t, std::int64_t, std::int64_t);
     void registerFunction(std::string stableSymbol, Function function);
     Function find(std::uint64_t stableSymbolId) const;
     void registerModule(std::string identity);
     bool hasModule(std::string_view identity) const;
     void registerFunction(Metadata metadata, Function function);
-    const Metadata* metadata(std::uint64_t stableSymbolId) const;
-private:
+    const Metadata *metadata(std::uint64_t stableSymbolId) const;
+
+  private:
     std::unordered_map<std::uint64_t, Function> functions_;
     std::unordered_map<std::uint64_t, Metadata> metadata_;
     std::unordered_set<std::string> modules_;
+    std::unordered_map<std::uint64_t, std::shared_ptr<TypedBinding>> typed_;
 };
 
 // Optional consumer of JM IR. Builds without LLVM retain all other backends.
 class LLVMBackend final : public NativeBackend {
-public:
+  public:
     explicit LLVMBackend(bool optimized = false, std::string target = {});
     static bool available();
     std::string targetTriple() const override;
-    NativeCode compile(const Module& module, const NativeFunctionRegistry& registry = {}) const override;
-    std::string emitIR(const Module& module) const;
-    void emitObject(const Module& module, const std::string& path, bool entryWrapper = false) const;
-    void build(const Module& module, const std::string& output, const std::string& linker = {}) const;
-private:
+    NativeCode compile(const Module &module, const NativeFunctionRegistry &registry = {}) const override;
+    std::string emitIR(const Module &module) const;
+    void emitObject(const Module &module, const std::string &path, bool entryWrapper = false) const;
+    void build(const Module &module, const std::string &output, const std::string &linker = {}) const;
+
+  private:
     bool optimized_{};
     std::string target_;
 };
@@ -142,9 +199,9 @@ private:
 // Bootstrap backend: emits executable x86-64 machine code for the scalar i64 subset.
 // The abstract backend boundary keeps LLVM and additional target implementations pluggable.
 class X64Backend final : public NativeBackend {
-public:
+  public:
     std::string targetTriple() const override;
-    NativeCode compile(const Module& module, const NativeFunctionRegistry& registry = {}) const override;
+    NativeCode compile(const Module &module, const NativeFunctionRegistry &registry = {}) const override;
 };
 
 } // namespace jm::script::ir

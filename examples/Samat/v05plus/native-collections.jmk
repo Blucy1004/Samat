@@ -1,0 +1,15 @@
+함수 greet(name: String) -> String:
+    ("Hello " + name)를 반환한다.
+함수 main() -> Int:
+    숫자 변수 text를 greet("사람")로 정한다.
+    숫자 변수 parts를 text.split(" ")로 정한다.
+    숫자 변수 values를 [5, 1, 8, 2, 3]로 정한다.
+    실행한다 values.sort()
+    values[1]를 10로 정한다.
+    실행한다 values.push(4)
+    숫자 변수 total를 0로 정한다.
+    values의 각 value를 반복하며:
+        total를 value만큼 늘린다.
+    (text.contains("사람") && (parts[1].codepointLength() == 2))라면:
+        (total + 11)를 반환한다.
+    1를 반환한다.

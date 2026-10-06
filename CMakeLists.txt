@@ -1,17 +1,23 @@
 cmake_minimum_required(VERSION 3.24)
-project(JMEngine VERSION 0.5.0 LANGUAGES C CXX)
+project(JMEngine VERSION 0.5.1 LANGUAGES C CXX)
 
 option(JMENGINE_BUILD_ENGINE "Build the SDL/OpenGL engine and editor" ON)
 option(JMENGINE_BUILD_SANDBOX "Build the JM Engine sandbox application" ON)
 option(JMENGINE_ENABLE_LLVM "Enable optional LLVM JIT and AOT backend" ON)
 option(JMENGINE_BUILD_BENCHMARKS "Build small compiler correctness benchmark" OFF)
+option(Samat_ENABLE_SANITIZERS "Instrument core/runtime and consumers with ASan/UBSan" OFF)
 include(CTest)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+add_library(Samat_runtime STATIC src/JMEngine/Script/RuntimeABI.cpp)
+set_target_properties(Samat_runtime PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_features(Samat_runtime PUBLIC cxx_std_20)
+
 add_library(Samat_core
     src/JMEngine/Script/LanguageCore.cpp
+    src/JMEngine/Script/ModuleLoader.cpp
     src/JMEngine/Script/TypeChecker.cpp
     src/JMEngine/Script/StandardLibrary.cpp
     src/JMEngine/Script/SurfaceRenderer.cpp
@@ -22,6 +28,16 @@ add_library(Samat_core
     src/JMEngine/Script/KoreanParticles.cpp
 )
 add_library(Samat::Core ALIAS Samat_core)
+target_link_libraries(Samat_core PRIVATE Samat_runtime)
+if(Samat_ENABLE_SANITIZERS)
+    if(MSVC)
+        message(FATAL_ERROR "Combined ASan/UBSan configuration requires GCC or Clang")
+    endif()
+    foreach(JM_SANITIZED_TARGET Samat_core Samat_runtime)
+        target_compile_options(${JM_SANITIZED_TARGET} PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(${JM_SANITIZED_TARGET} PUBLIC -fsanitize=address,undefined)
+    endforeach()
+endif()
 target_include_directories(Samat_core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
 target_compile_features(Samat_core PUBLIC cxx_std_20)
 if(MSVC)
@@ -154,6 +170,15 @@ if(BUILD_TESTING)
         target_compile_options(Samat_compiler_tests PRIVATE /EHsc /utf-8)
     endif()
     add_test(NAME Samat_compiler_regression COMMAND Samat_compiler_tests)
+    add_executable(Samat_extended_tests tests/ExtendedRegression.cpp)
+    if(JMENGINE_BUILD_ENGINE)
+        target_link_libraries(Samat_extended_tests PRIVATE JMEngine::JMEngine)
+        target_compile_definitions(Samat_extended_tests PRIVATE JMENGINE_HAS_ENGINE=1)
+    else()
+        target_link_libraries(Samat_extended_tests PRIVATE Samat::Core)
+        target_compile_definitions(Samat_extended_tests PRIVATE JMENGINE_HAS_ENGINE=0)
+    endif()
+    add_test(NAME Samat_extended_regression COMMAND Samat_extended_tests)
     add_executable(Samat_runtime_memory tests/RuntimeMemory.cpp)
     target_link_libraries(Samat_runtime_memory PRIVATE Samat::Core)
     if(MSVC)
@@ -165,3 +190,8 @@ if(JMENGINE_BUILD_BENCHMARKS)
     add_executable(Samat_benchmark tests/CompilerBenchmark.cpp)
     target_link_libraries(Samat_benchmark PRIVATE Samat::Core)
 endif()
+
+# The AOT runtime archive is relocatable beside the installed CLI.
+install(TARGETS Samat_cli Samat_runtime
+    RUNTIME DESTINATION bin COMPONENT Samat
+    ARCHIVE DESTINATION bin COMPONENT Samat)

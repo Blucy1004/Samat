@@ -298,10 +298,12 @@ void Application::update(float deltaSeconds) {
         }
         int steps = 0;
         while (scriptAccumulator_ >= fixedStep && steps < 6) {
-            ScriptInput scriptInput{rightHeld, leftHeld, spacePressed && steps == 0};
+            ScriptInput scriptInput{rightHeld, leftHeld, spacePressed && steps == 0, {}, {}};
             scriptInput.keysHeld = keysHeld;
             if (steps == 0 && acceptGameInput) scriptInput.keysPressed = keysPressedThisFrame_;
-            executeScript(compiledScript_, scene_, scriptInput, fixedStep);
+            if(languageRuntime_) {
+                try {languageRuntime_->tick(scriptInput,fixedStep);}catch(const std::exception& error){auto message=std::string(error.what());togglePlaying();languageStatus_=message;scriptStatus_=message;break;}
+            }else executeScript(compiledScript_, scene_, scriptInput, fixedStep);
             scene_.stepPhysics2D(fixedStep);
             scriptAccumulator_ -= fixedStep;
             ++steps;
@@ -695,8 +697,9 @@ void Application::drawLanguageCorePanel() {
                 options.instructionBudget = 100'000;
                 options.recursionLimit = 128;
                 bool hasMain=false,hasActions=false;
-                for(const auto& statement:program.statements) { hasMain|=statement.kind==Statement::Kind::Function && statement.name=="main";hasActions|=statement.kind!=Statement::Kind::Function && statement.kind!=Statement::Kind::Variable && statement.kind!=Statement::Kind::Import && statement.kind!=Statement::Kind::Event; }
-                if(hasMain && !hasActions)options.entryFunction="main";options.eventName="start";
+                for(const auto& statement:program.statements) { hasMain|=statement.kind==Statement::Kind::Function && statement.name=="main";hasActions|=statement.kind!=Statement::Kind::Function && statement.kind!=Statement::Kind::Variable && statement.kind!=Statement::Kind::Import && statement.kind!=Statement::Kind::Event && statement.kind!=Statement::Kind::Enum && statement.kind!=Statement::Kind::Struct; }
+                if(hasMain && !hasActions) options.entryFunction="main";
+                options.eventName="start";
                 const ExecutionResult result = execute(program, options);
                 languageCompiled_ = true;
                 languageStatus_ = "실행 완료 · " + std::to_string(result.instructionsExecuted) + "개 명령 처리";
@@ -790,6 +793,7 @@ void Application::drawLanguageCorePanel() {
             }
         }
     }
+    ImGui::BeginDisabled(playing_);ImGui::Checkbox("이 언어 스크립트로 Play 실행",&languagePlayEnabled_);ImGui::EndDisabled();
     if (!languageStatus_.empty()) ImGui::TextWrapped("%s", languageStatus_.c_str());
     if (!languageOutput_.empty()) {
         ImGui::BeginChild("SamatOutput", ImVec2(-1.0F, resultHeight - 20.0F), ImGuiChildFlags_Borders);
@@ -901,9 +905,20 @@ void Application::createProject() {
     }
 }
 
+void Application::startLanguagePlay(std::string source,bool korean) {
+    if(playing_) throw std::runtime_error("Stop Play before changing the language script.");
+    languageCodeBuffer_=std::move(source);
+    languageKoreanSyntax_=korean;
+    languagePlayEnabled_=true;
+    twoDimensional_=true;
+    togglePlaying();
+    if(!playing_) throw std::runtime_error(languageStatus_);
+}
+void Application::stopPlay(){if(playing_)togglePlaying();}
 void Application::togglePlaying() {
     if (playing_) {
         playing_ = false;
+        languageRuntime_.reset();
         if (playSnapshot_) scene_ = std::move(*playSnapshot_);
         playSnapshot_.reset();
         requestedWorkspace_ = 0;
@@ -916,6 +931,16 @@ void Application::togglePlaying() {
         return;
     }
 
+    if(languagePlayEnabled_) {
+        script::Program program;script::Diagnostic diagnostic;
+        auto parsed=languageKoreanSyntax_?script::parseKorean(languageCodeBuffer_,program,diagnostic):script::parseCode(languageCodeBuffer_,program,diagnostic);
+        if(!parsed){languageStatus_=diagnostic.message;return;}
+        std::string playerId;for(const auto& object:scene_.objects())if(object.name=="Player"){playerId=object.id;break;}
+        playSnapshot_=scene_;
+        try {languageRuntime_=std::make_unique<EngineEventRuntime>(scene_,playerId,std::move(program));languageRuntime_->start();}
+        catch(const std::exception& error){languageRuntime_.reset();scene_=std::move(*playSnapshot_);playSnapshot_.reset();languageStatus_=error.what();return;}
+        scriptAccumulator_=0;playing_=true;activeWorkspace_=2;requestedWorkspace_=2;tutorialPlayRun_=true;scriptStatus_="Samat 이벤트 실행을 시작했어요.";return;
+    }
     ScriptDocument candidate = script_;
     if (codeMode_) {
         ScriptDiagnostic parseDiagnostic;

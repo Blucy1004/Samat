@@ -1,0 +1,11 @@
+가져온다 jm.game
+정수 변수 score를 0로 정한다.
+시작할 때:
+    실행한다 transform.setPosition(x: 0.0, y: (- 2.2000000000000002))
+    score를 10만큼 늘린다.
+이벤트 update:
+    score를 1만큼 늘린다.
+오른쪽 키를 누르는 동안:
+    실행한다 player.moveFloat(direction: 1.0, speed: 8.5)
+스페이스 키를 눌렀을 때:
+    실행한다 player.jumpFloat(force: 12.5)

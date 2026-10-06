@@ -1,0 +1,4 @@
+가져온다 "utils.st"
+가져온다 "utils.st"
+함수 main() -> Int:
+    answer(40)를 반환한다.

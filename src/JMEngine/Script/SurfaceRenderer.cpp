@@ -5,7 +5,7 @@
 
 namespace jm::script {
 namespace {
-std::string quote(const std::string& value) {
+std::string quote(const std::string &value) {
     std::string out = "\"";
     for (char ch : value) {
         if (ch == '\\' || ch == '"') {
@@ -22,7 +22,7 @@ std::string quote(const std::string& value) {
     }
     return out + '"';
 }
-std::string expression(const ExpressionPtr& value) {
+std::string expression(const ExpressionPtr &value) {
     if (!value)
         return "null";
     switch (value->kind) {
@@ -54,12 +54,23 @@ std::string expression(const ExpressionPtr& value) {
         for (std::size_t i = 0; i < value->arguments.size(); ++i) {
             if (i)
                 out += ", ";
-            const auto& item = value->arguments[i];
+            const auto &item = value->arguments[i];
             if (!item.name.empty())
                 out += item.name + ": ";
             out += expression(item.value);
         }
         return out + ")";
+    }
+    case Expression::Kind::Tuple: {
+        std::string result = "(";
+        for (size_t i = 0; i < value->elements.size(); ++i) {
+            if (i)
+                result += ", ";
+            result += expression(value->elements[i]);
+        }
+        if (value->elements.size() == 1)
+            result += ",";
+        return result + ")";
     }
     case Expression::Kind::Array: {
         std::string out = "[";
@@ -96,40 +107,53 @@ std::string koreanType(Type type) {
         return "목록";
     case Type::Map:
         return "지도";
+    case Type::Tuple:
+        return "Tuple";
+    case Type::Range:
+        return "Range";
     case Type::Vector2:
         return "Vector2";
+    case Type::Vector3:
+        return "Vector3";
+    case Type::Color:
+        return "Color";
     case Type::Any:
         return "숫자";
     default:
         throw std::runtime_error("Korean declaration renderer does not support type " + typeName(type));
     }
 }
-void render(std::ostringstream& out, const StatementList& list, bool korean, std::size_t depth = 0) {
+void render(std::ostringstream &out, const StatementList &list, bool korean, std::size_t depth = 0) {
     const std::string indent(depth * 4, ' ');
-    for (const auto& item : list) {
+    for (const auto &item : list) {
         out << indent;
         switch (item.kind) {
         case Statement::Kind::Variable:
             if (!item.expression) {
                 if (korean)
-                    out << koreanType(item.declaredType) << " 변수 "
-                        << jm::attachKoreanParticle(item.name, jm::KoreanParticle::Object) << " 선언한다.\n";
+                    out << (item.elementType == Type::Any
+                                ? koreanType(item.declaredType)
+                                : annotationName(item.declaredType, item.elementType))
+                        << " 변수 " << jm::attachKoreanParticle(item.name, jm::KoreanParticle::Object)
+                        << " 선언한다.\n";
                 else {
                     out << "let " << item.name;
                     if (item.declaredType != Type::Any)
-                        out << ": " << typeName(item.declaredType);
+                        out << ": " << annotationName(item.declaredType, item.elementType);
                     out << '\n';
                 }
                 break;
             }
             if (korean)
-                out << koreanType(item.declaredType) << ' ' << (item.constant ? "상수 " : "변수 ")
+                out << (item.elementType == Type::Any ? koreanType(item.declaredType)
+                                                      : annotationName(item.declaredType, item.elementType))
+                    << ' ' << (item.constant ? "상수 " : "변수 ")
                     << jm::attachKoreanParticle(item.name, jm::KoreanParticle::Object) << ' '
                     << expression(item.expression) << "로 정한다.\n";
             else {
                 out << (item.constant ? "const " : "let ") << item.name;
                 if (item.declaredType != Type::Any)
-                    out << ": " << typeName(item.declaredType);
+                    out << ": " << annotationName(item.declaredType, item.elementType);
                 out << " = " << expression(item.expression) << '\n';
             }
             break;
@@ -141,6 +165,7 @@ void render(std::ostringstream& out, const StatementList& list, bool korean, std
                     << (item.operation == "+="   ? "늘린다."
                         : item.operation == "-=" ? "줄인다."
                         : item.operation == "*=" ? "곱한다."
+                        : item.operation == "%=" ? "나머지를 구한다."
                                                  : "나눈다.")
                     << '\n';
             else
@@ -150,6 +175,20 @@ void render(std::ostringstream& out, const StatementList& list, bool korean, std
         case Statement::Kind::Expression:
             out << (korean ? "실행한다 " : "") << expression(item.expression) << '\n';
             break;
+        case Statement::Kind::Enum:
+        case Statement::Kind::Struct:
+            out << (item.kind == Statement::Kind::Enum ? (korean ? "열거형 " : "enum ")
+                                                       : (korean ? "자료형 " : "struct "))
+                << item.name << ":\n";
+            for (const auto &field : item.body) {
+                out << std::string((depth + 1) * 4, ' ') << field.name;
+                if (item.kind == Statement::Kind::Struct)
+                    out << ": " << annotationName(field.declaredType, field.elementType);
+                if (field.expression)
+                    out << " = " << expression(field.expression);
+                out << '\n';
+            }
+            break;
         case Statement::Kind::Function:
             out << (korean ? "함수 " : "fn ") << item.name << '(';
             for (std::size_t i = 0; i < item.parameters.size(); ++i) {
@@ -157,11 +196,14 @@ void render(std::ostringstream& out, const StatementList& list, bool korean, std
                     out << ", ";
                 out << item.parameters[i];
                 if (i < item.parameterTypes.size() && item.parameterTypes[i] != Type::Any)
-                    out << ": " << typeName(item.parameterTypes[i]);
+                    out << ": "
+                        << annotationName(item.parameterTypes[i], i < item.parameterElementTypes.size()
+                                                                      ? item.parameterElementTypes[i]
+                                                                      : Type::Any);
             }
             out << ')';
             if (item.returnType != Type::Any)
-                out << " -> " << typeName(item.returnType);
+                out << " -> " << annotationName(item.returnType, item.returnElementType);
             out << ":\n";
             render(out, item.body, korean, depth + 1);
             break;
@@ -222,18 +264,19 @@ void render(std::ostringstream& out, const StatementList& list, bool korean, std
             render(out, item.body, korean, depth + 1);
             break;
         case Statement::Kind::Import:
-            out << (korean ? "가져온다 " : "import ") << item.name << '\n';
+            out << (korean ? "가져온다 " : "import ") << (item.fileImport ? quote(item.name) : item.name)
+                << '\n';
             break;
         }
     }
 }
 } // namespace
-std::string renderCode(const Program& program) {
+std::string renderCode(const Program &program) {
     std::ostringstream out;
     render(out, program.statements, false);
     return out.str();
 }
-std::string renderKorean(const Program& program) {
+std::string renderKorean(const Program &program) {
     std::ostringstream out;
     render(out, program.statements, true);
     return out.str();

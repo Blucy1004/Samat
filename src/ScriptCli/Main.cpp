@@ -1,15 +1,95 @@
 #include "JMEngine/Script/JMIR.hpp"
 #include "JMEngine/Script/LanguageCore.hpp"
+#include "JMEngine/Script/ModuleLoader.hpp"
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <sstream>
 #include <string>
 #include <vector>
 
 namespace {
+jm::script::HostFunction ioHost() {
+    using namespace jm::script;
+    return [](const std::string &name, const std::vector<Value> &args,
+              const std::vector<std::string> &) -> Value {
+        if (name == "readLine" || name == "builtin.console.readLine") {
+            if (!args.empty())
+                throw std::runtime_error("readLine takes no arguments.");
+            std::string line;
+            std::getline(std::cin, line);
+            return Value(line);
+        }
+        if (name != "builtin.file.exists" && name != "builtin.file.readText" &&
+            name != "builtin.file.writeText")
+            throw std::out_of_range("Unknown IO capability");
+        if (args.size() != (name == "builtin.file.writeText" ? 2u : 1u) || args[0].type() != Type::String)
+            throw std::runtime_error("File IO argument mismatch.");
+        auto path = std::get<std::string>(args[0].data);
+        if (name == "builtin.file.exists")
+            return Value(std::filesystem::exists(path));
+        if (name == "builtin.file.readText") {
+            std::ifstream input(path, std::ios::binary);
+            if (!input)
+                throw std::runtime_error("Cannot read file: " + path);
+            std::string text(std::istreambuf_iterator<char>(input), {});
+            if (text.size() > 16 * 1024 * 1024)
+                throw std::runtime_error("File read exceeds 16 MiB limit.");
+            return Value(std::move(text));
+        }
+        if (args[1].type() != Type::String)
+            throw std::runtime_error("writeText needs String contents.");
+        std::ofstream output(path, std::ios::binary);
+        auto &text = std::get<std::string>(args[1].data);
+        output.write(text.data(), text.size());
+        if (!output)
+            throw std::runtime_error("Cannot write file: " + path);
+        return Value{};
+    };
+}
+int repl() {
+    using namespace jm::script;
+    auto session = std::make_unique<ExecutionSession>(Program{}, RunOptions{}, ioHost());
+    std::string line, source;
+    bool block = false;
+    while (std::getline(std::cin, line)) {
+        if (source.empty() && line == ":quit")
+            break;
+        if (source.empty() && line == ":reset") {
+            session = std::make_unique<ExecutionSession>(Program{}, RunOptions{}, ioHost());
+            continue;
+        }
+        if (source.empty() && line == ":help") {
+            std::cout << "Code statements/expressions; blank line submits a block; :reset / :quit\n";
+            continue;
+        }
+        if (!line.empty()) {
+            source += line + "\n";
+            if (line.ends_with(':'))
+                block = true;
+            if (block)
+                continue;
+        }
+        if (source.empty())
+            continue;
+        try {
+            auto result = session->evaluate(source);
+            for (const auto &output : result.output)
+                std::cout << output << '\n';
+            if (!result.returnValue.isNull())
+                std::cout << result.returnValue.toString() << '\n';
+        } catch (const std::exception &error) {
+            std::cerr << error.what() << '\n';
+        }
+        source.clear();
+        block = false;
+    }
+    return 0;
+}
 void help() {
-    std::cout << "Samat / 訓C正音 v0.5\n"
+    std::cout << "Samat / 訓C正音 v0.5+\n"
                  "  SamatCompiler [run] file.st [--entry main]\n"
                  "  SamatCompiler check file.st\n"
                  "  SamatCompiler --ast|--ir|--code|--korean file.st\n"
@@ -19,9 +99,9 @@ void help() {
                  "  SamatCompiler --emit-obj output.o file.st [--target triple]\n"
                  "  SamatCompiler build file.st -o program [--target triple] [--linker path]\n"
                  "  SamatCompiler --build output file.st\n"
-                 "  SamatCompiler --help|--version\n";
+                 "  SamatCompiler format file.st | --repl\n  SamatCompiler --help|--version\n";
 }
-void showDiagnostic(const jm::script::Diagnostic& diagnostic) {
+void showDiagnostic(const jm::script::Diagnostic &diagnostic) {
     std::cerr << diagnostic.code;
     if (diagnostic.line)
         std::cerr << " at " << diagnostic.line << ':' << diagnostic.column;
@@ -29,11 +109,11 @@ void showDiagnostic(const jm::script::Diagnostic& diagnostic) {
     if (!diagnostic.suggestion.empty())
         std::cerr << "  " << diagnostic.suggestion << '\n';
 }
-void ast(const jm::script::StatementList& statements, std::size_t depth = 0) {
-    static const char* kinds[]{"Variable", "Assignment", "Expression", "If",     "While",
+void ast(const jm::script::StatementList &statements, std::size_t depth = 0) {
+    static const char *kinds[]{"Variable", "Assignment", "Expression", "If",     "While",
                                "ForRange", "ForEach",    "Function",   "Return", "Break",
-                               "Continue", "Import",     "Event"};
-    for (const auto& item : statements) {
+                               "Continue", "Import",     "Event",      "Enum",   "Struct"};
+    for (const auto &item : statements) {
         std::cout << std::string(depth * 2, ' ') << kinds[static_cast<unsigned>(item.kind)];
         if (!item.name.empty())
             std::cout << ' ' << item.name;
@@ -59,13 +139,15 @@ void ast(const jm::script::StatementList& statements, std::size_t depth = 0) {
     }
 }
 } // namespace
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
     using namespace jm::script;
     if (argc < 2) {
         help();
         return 2;
     }
     try {
+        if (argc == 2 && std::string(argv[1]) == "--repl")
+            return repl();
         std::string mode = "run", file, function, output, target, linker, entry;
         bool optimized = false;
         std::vector<std::string> positional;
@@ -76,7 +158,7 @@ int main(int argc, char** argv) {
                 return 0;
             }
             if (arg == "--version") {
-                std::cout << "Samat / 訓C正音 0.5.0 (LLVM "
+                std::cout << "Samat / 訓C正音 0.5.1 (LLVM "
                           << (ir::LLVMBackend::available() ? "enabled" : "unavailable") << ")\n";
                 return 0;
             }
@@ -94,9 +176,9 @@ int main(int argc, char** argv) {
                 continue;
             }
             if (i == 1 &&
-                (arg == "run" || arg == "check" || arg == "build" || arg == "--ir" || arg == "--ast" ||
-                 arg == "--native" || arg == "--llvm-jit" || arg == "--emit-llvm" || arg == "--emit-obj" ||
-                 arg == "--build" || arg == "--code" || arg == "--korean")) {
+                (arg == "format" || arg == "run" || arg == "check" || arg == "build" || arg == "--ir" ||
+                 arg == "--ast" || arg == "--native" || arg == "--llvm-jit" || arg == "--emit-llvm" ||
+                 arg == "--emit-obj" || arg == "--build" || arg == "--code" || arg == "--korean")) {
                 mode = arg;
                 continue;
             }
@@ -130,9 +212,28 @@ int main(int argc, char** argv) {
             showDiagnostic(korean ? koreanDiagnostic : codeDiagnostic);
             return 1;
         }
+        if (mode != "format" && mode != "--code" && mode != "--korean") {
+            auto resolver = [](std::string_view importer,
+                               std::string_view request) -> std::optional<ModuleSource> {
+                auto path = std::filesystem::weakly_canonical(std::filesystem::path(importer).parent_path() /
+                                                              request);
+                std::ifstream input(path, std::ios::binary);
+                if (!input)
+                    return std::nullopt;
+                return ModuleSource{path.string(), std::string(std::istreambuf_iterator<char>(input), {})};
+            };
+            Diagnostic diagnostic;
+            Program resolved;
+            if (!loadModules({std::filesystem::weakly_canonical(file).string(), source}, resolver, resolved,
+                             diagnostic)) {
+                showDiagnostic(diagnostic);
+                return 1;
+            }
+            program = std::move(resolved);
+        }
         std::vector<Diagnostic> diagnostics;
         if (!check(program, diagnostics)) {
-            for (const auto& diagnostic : diagnostics)
+            for (const auto &diagnostic : diagnostics)
                 showDiagnostic(diagnostic);
             return 1;
         }
@@ -144,8 +245,8 @@ int main(int argc, char** argv) {
             ast(program.statements);
             return 0;
         }
-        if (mode == "--code" || mode == "--korean") {
-            std::cout << (mode == "--code" ? renderCode(program) : renderKorean(program));
+        if (mode == "format" || mode == "--code" || mode == "--korean") {
+            std::cout << (mode != "--korean" ? renderCode(program) : renderKorean(program));
             return 0;
         }
         if (mode == "run") {
@@ -153,17 +254,18 @@ int main(int argc, char** argv) {
             options.entryFunction = entry;
             options.eventName = "start";
             bool main = false, actions = false;
-            for (const auto& statement : program.statements) {
+            for (const auto &statement : program.statements) {
                 main |= statement.kind == Statement::Kind::Function && statement.name == "main";
-                actions |= statement.kind != Statement::Kind::Function &&
-                           statement.kind != Statement::Kind::Variable &&
-                           statement.kind != Statement::Kind::Import &&
-                           statement.kind != Statement::Kind::Event;
+                actions |=
+                    statement.kind != Statement::Kind::Function &&
+                    statement.kind != Statement::Kind::Variable &&
+                    statement.kind != Statement::Kind::Import && statement.kind != Statement::Kind::Event &&
+                    statement.kind != Statement::Kind::Enum && statement.kind != Statement::Kind::Struct;
             }
             if (entry.empty() && main && !actions)
                 options.entryFunction = "main";
-            const auto result = execute(program, options);
-            for (const auto& line : result.output)
+            const auto result = execute(program, options, ioHost());
+            for (const auto &line : result.output)
                 std::cout << line << '\n';
             if (!options.entryFunction.empty())
                 std::cout << "result: " << result.returnValue.toString() << '\n';
@@ -215,7 +317,7 @@ int main(int argc, char** argv) {
             std::cout << "target: " << (mode == "--native" ? bootstrap.targetTriple() : llvm.targetTriple())
                       << "\nresult: " << result.toString() << '\n';
             if (mode == "--native") {
-                const auto& bytes = native.machineCode(function);
+                const auto &bytes = native.machineCode(function);
                 std::cout << "machine code (" << bytes.size() << " bytes):\n";
                 for (std::size_t i = 0; i < bytes.size(); ++i) {
                     if (i % 16 == 0)
@@ -228,7 +330,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         throw std::runtime_error("Unknown mode. See --help.");
-    } catch (const std::exception& error) {
+    } catch (const std::exception &error) {
         std::cerr << "Samat error: " << error.what() << '\n';
         return 1;
     }

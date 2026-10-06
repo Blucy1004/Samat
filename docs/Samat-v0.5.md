@@ -1,3 +1,5 @@
+> Historical v0.5 milestone. See [the current v0.5+ implementation and capability report](Samat-v0.5-plus.md).
+
 # Samat / 訓C正音 v0.5 development milestone
 
 “사ᄅᆞᆷ의 ᄠᅳ디 CPU에 ᄉᆞᄆᆞᆺ게 ᄒᆞ노라.”

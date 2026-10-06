@@ -1,0 +1,16 @@
+열거형 Direction:
+    left = 0
+    right = 1
+자료형 Stats:
+    health: Int
+    speed: Float
+    name: String = "Player"
+함수 main() -> Int:
+    숫자 변수 stats를 Stats(health: 100, speed: 8.5)로 정한다.
+    숫자 변수 direction를 Direction.right로 정한다.
+    Tuple 변수 position를 (10.0, 20.0)로 정한다.
+    Vector3 변수 vector를 Vector3(1, 0, 0).cross(Vector3(0, 1, 0))로 정한다.
+    stats.health를 58만큼 줄인다.
+    ((direction == Direction.right) && (vector.z == 1.0))라면:
+        stats.health를 반환한다.
+    1를 반환한다.

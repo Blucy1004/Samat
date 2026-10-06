@@ -9,6 +9,7 @@ struct StandardFunction {
     Type returnType{Type::Float};
     bool numericArguments{true};
 };
+int runtimeStandardOperation(std::string_view name);
 bool standardModule(std::string_view identity);
 std::optional<StandardFunction> standardFunction(std::string_view name);
 } // namespace jm::script
