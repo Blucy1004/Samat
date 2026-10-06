@@ -506,6 +506,8 @@ struct Checker {
                         error("JM2003", "Missing struct field: " + fields[i].name);
                 return Type::Struct;
             }
+            if (name == "readLine" || name == "builtin.console.readLine")
+                return standardFunction(name)->returnType;
             if (auto standard = standardFunction(name)) {
                 if (arguments.size() < standard->minimumArity || arguments.size() > standard->maximumArity)
                     error("JM2003", "Standard library argument count mismatch.");

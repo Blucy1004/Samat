@@ -44,6 +44,9 @@ bool standardModule(std::string_view identity) {
            identity == "jm.console" || identity == "jm.collections";
 }
 std::optional<StandardFunction> standardFunction(std::string_view name) {
+    if (name == "readLine" || name == "builtin.console.readLine")
+        return StandardFunction{std::string(name), "jm.console", "Read one line from the console.", 0, 0, Type::String,
+                                false};
     if (auto op = runtimeStandardOperation(name)) {
         size_t arity = op == JM_RT_ATAN2 || op == JM_RT_RANDOM_INT || op == JM_RT_RANDOM_FLOAT  ? 2
                        : op == JM_RT_LERP || op == JM_RT_SMOOTHSTEP                             ? 3
