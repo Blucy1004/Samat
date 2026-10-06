@@ -3,6 +3,13 @@
 #include <cctype>
 namespace jm::script::ir {
 namespace {
+std::string asciiFold(std::string_view text) {
+    std::string result(text);
+    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char character) {
+        return static_cast<char>(character >= 'A' && character <= 'Z' ? character + ('a' - 'A') : character);
+    });
+    return result;
+}
 std::string initials(std::string_view text) {
     static const char *consonants[] = {"ㄱ", "ㄲ", "ㄴ", "ㄷ", "ㄸ", "ㄹ", "ㅁ", "ㅂ", "ㅃ", "ㅅ",
                                        "ㅆ", "ㅇ", "ㅈ", "ㅉ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"};
@@ -77,7 +84,8 @@ bool metadataMatches(const NativeFunctionRegistry::Metadata &metadata, std::stri
         return true;
     auto text = metadata.displayName + " " + metadata.koreanName + " " + metadata.tooling.beginnerName + " " +
                 metadata.documentation;
-    return text.find(query) != std::string::npos || initials(text).find(initials(query)) != std::string::npos;
+    return asciiFold(text).find(asciiFold(query)) != std::string::npos ||
+           initials(text).find(initials(query)) != std::string::npos;
 }
 std::string metadataSignature(const NativeFunctionRegistry::Metadata &metadata) {
     std::string result = metadata.displayName + "(";

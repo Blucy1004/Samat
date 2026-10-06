@@ -141,6 +141,7 @@ void metadata() {
     auto registry = jm::engineNativeFunctions();
     auto jump = registry.metadata(stableBuiltinSymbolId("builtin.player.jump"));
     require(jump && metadataMatches(*jump, "ㅈㅍ"), "Hangul initial search");
+    require(jump && metadataMatches(*jump, "JUMP"), "Case-insensitive ASCII metadata search");
     require(metadataSignature(*jump).find("force: Int") != std::string::npos, "Metadata signature");
     for (const auto &entry : registry.allMetadata()) {
         auto code = metadataTemplate(entry);

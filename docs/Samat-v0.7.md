@@ -89,7 +89,7 @@ The type checker consumes this registry through `check(..., registry)` and `RunO
 
 ## 14. Palette
 
-Editor feature search uses registry metadata. Advanced entries are collapsed. Templates are parsed and rendered through the shared AST; unsupported argument templates are disabled. Movement, input and Scene APIs are discoverable. A complete set of event/flow/sound/data discovery items is still PARTIAL.
+Editor feature search uses registry metadata with case-insensitive ASCII matching and Hangul initial search. Advanced entries are collapsed. Templates are parsed and rendered through the shared AST; unsupported argument templates are disabled. Movement, input and Scene APIs are discoverable. A complete set of event/flow/sound/data discovery items is still PARTIAL.
 
 Search matches Code/Korean/beginner/description text and deterministic Unicode Hangul initial consonants (`ㅈㅍ`). No AI/NLP requirement.
 
