@@ -1110,6 +1110,7 @@ struct Lowerer {
                     if (type == Type::String) {
                         const std::unordered_map<std::string, std::pair<int, Type>> methods{
                             {"substring", {JM_RT_SUBSTRING, Type::String}},
+                            {"slice", {JM_RT_SUBSTRING, Type::String}},
                             {"contains", {JM_RT_CONTAINS, Type::Bool}},
                             {"startsWith", {JM_RT_STARTS_WITH, Type::Bool}},
                             {"endsWith", {JM_RT_ENDS_WITH, Type::Bool}},
@@ -1237,6 +1238,25 @@ struct Lowerer {
                     in.left = id;
                     in.type = Type::Int;
                     return emit(in);
+                }
+                if (name == "bool") {
+                    if (value->arguments.size() != 1)
+                        throw std::runtime_error("bool requires one argument.");
+                    auto id = expression(value->arguments[0].value);
+                    auto actual = function.valueTypes[id];
+                    if (actual == Type::Bool)
+                        return id;
+                    if (actual == Type::String)
+                        id = runtime(JM_RT_LENGTH, {id, integer(0), integer(static_cast<int>(Type::String))},
+                                     Type::Int);
+                    else if (actual != Type::Int && actual != Type::Float)
+                        throw std::runtime_error(
+                            "Native bool conversion accepts Bool, Int, Float, or String.");
+                    Instruction conversion;
+                    conversion.op = Op::ToBoolean;
+                    conversion.left = id;
+                    conversion.type = Type::Bool;
+                    return emit(conversion);
                 }
                 if (name == "bitXor") {
                     if (value->arguments.size() != 2)

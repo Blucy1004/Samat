@@ -208,7 +208,8 @@ void sessions() {
 #if JMENGINE_HAS_ENGINE
     auto sceneProgram = parse(
         "import jm.game\nlet created: String = \"\"\non start:\n    created = scene.createSprite(name: "
-        "\"Extra\")\n    if scene.findId(name: \"Extra\") == created:\n        scene.destroy(id: created)\non "
+        "\"Extra\")\n    if scene.findId(name: \"Extra\") == created:\n        scene.destroy(id: "
+        "created)\non "
         "update:\n    if input.isHeld(key: \"right\"):\n        transform.setPosition(x: 5.5, y: 3.5)\n      "
         "  physics.setVelocityY(velocity: 1.5)\n        physics.applyImpulseY(impulse: 2.0)\n");
     for (auto backend : {jm::EngineScriptBackend::Interpreter, jm::EngineScriptBackend::LLVM}) {
@@ -276,6 +277,14 @@ void aot() {
     int status = std::system(executable.c_str());
     require(WIFEXITED(status) && WEXITSTATUS(status) == 42, "Native String/List AOT actual exit");
     ++passed;
+    auto conversions = directory / "conversions";
+    LLVMBackend{true}.build(
+        lowerChecked(parse("fn main() -> Int:\n    if bool(1) and bool(\"yes\") and not bool(\"\") and "
+                           "\"Samat\".slice(1, 3) == \"ama\":\n        return 42\n    return 0\n")),
+        conversions.string());
+    status = std::system(conversions.c_str());
+    require(WIFEXITED(status) && WEXITSTATUS(status) == 42, "AOT Bool/String slice execution");
+    ++passed;
     auto invalid = directory / "bounds";
     LLVMBackend{}.build(
         lowerChecked(parse("fn main() -> Int:\n    let values = [1]\n    return values[4]\n")),
@@ -294,6 +303,11 @@ int main() {
             "String methods",
             "fn main() -> String:\n    return \"  Hello 사람  \".trim().replace(\"Hello\", \"JM\").upper()\n",
             "JM 사람");
+        parity("String slice alias and Bool conversion",
+               "fn main() -> Int:\n    let word = \"Samat\".slice(1, 3)\n    if word == \"ama\" and "
+               "bool(1) and bool(-0.25) and bool(\"present\") and not bool(0) and not bool(\"\"):\n        "
+               "return 42\n    return 0\n",
+               "42");
         parity("byte and codepoint lengths",
                "fn main() -> Int:\n    let text = \"사람\"\n    return text.length * 6 + "
                "text.codepointLength() * 3\n",

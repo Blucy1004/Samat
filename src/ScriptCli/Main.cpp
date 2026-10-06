@@ -20,6 +20,8 @@ jm::script::HostFunction ioHost() {
                 throw std::runtime_error("readLine takes no arguments.");
             std::string line;
             std::getline(std::cin, line);
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
             return Value(line);
         }
         if (name != "builtin.file.exists" && name != "builtin.file.readText" &&
@@ -89,7 +91,7 @@ int repl() {
     return 0;
 }
 void help() {
-    std::cout << "Samat / 訓C正音 v0.6\n"
+    std::cout << "Samat / Samat / 訓C正音 v0.8\n"
                  "  SamatCompiler [run] file.st [--entry main]\n"
                  "  SamatCompiler check file.st\n"
                  "  SamatCompiler --ast|--ir|--code|--korean file.st\n"
@@ -158,7 +160,7 @@ int main(int argc, char **argv) {
                 return 0;
             }
             if (arg == "--version") {
-                std::cout << "Samat / 訓C正音 0.7.0 (LLVM "
+                std::cout << "Samat / Samat / 訓C正音 0.8.0 (LLVM "
                           << (ir::LLVMBackend::available() ? "enabled" : "unavailable") << ")\n";
                 return 0;
             }

@@ -260,6 +260,14 @@ script::ir::NativeFunctionRegistry engineNativeFunctions() {
         },
         "Read a named held key.");
     typed(
+        "builtin.input.wasPressed", {"key"}, {Type::String}, Type::Bool,
+        [](const auto &args) {
+            if (!active)
+                return script::Value(false);
+            return script::Value(active->input.keysPressed.contains(std::get<std::string>(args[0].data)));
+        },
+        "Read whether a named key was pressed during this frame.");
+    typed(
         "builtin.scene.findId", {"name"}, {Type::String}, Type::String,
         [](const auto &args) {
             if (active)
@@ -320,6 +328,34 @@ script::ir::NativeFunctionRegistry engineNativeFunctions() {
                                           object.id, active->scene.identity(), object.generation}));
         return script::Value::optional(Type::Entity);
     });
+    Registry::Metadata spawnInfo{"builtin.scene.spawn",
+                                 "scene.spawn",
+                                 "장면에 스프라이트 만들기",
+                                 "위치와 크기, 색을 지정해 안전한 오브젝트 참조를 돌려줘요.",
+                                 {"name", "position", "scale", "color"},
+                                 {Type::String, Type::Vector2, Type::Vector2, Type::Color},
+                                 Type::Optional,
+                                 {},
+                                 Type::Entity};
+    registry.registerTypedFunction(spawnInfo, [](const auto &args) {
+        if (!active)
+            return script::Value::optional(Type::Entity);
+        auto &object = active->scene.create(ObjectKind::Sprite2D);
+        object.name = std::get<std::string>(args[0].data);
+        auto position = std::get<script::Vector2Value>(args[1].data);
+        auto size = std::get<script::Vector2Value>(args[2].data);
+        auto color = std::get<script::ColorValue>(args[3].data);
+        object.position.x = finiteFloat(position.x);
+        object.position.y = finiteFloat(position.y);
+        object.scale.x = finiteFloat(size.x);
+        object.scale.y = finiteFloat(size.y);
+        if (object.scale.x <= 0 || object.scale.y <= 0)
+            throw std::runtime_error("Sprite size must be positive.");
+        object.color = {finiteFloat(color.r), finiteFloat(color.g), finiteFloat(color.b)};
+        return script::Value::optional(
+            Type::Entity,
+            script::Value(script::EntityReference{object.id, active->scene.identity(), object.generation}));
+    });
     auto resolve = [](const script::Value &value) -> GameObject & {
         auto handle = std::get<script::EntityReference>(value.data);
         if (active && handle.sceneIdentity == active->scene.identity())
@@ -336,6 +372,48 @@ script::ir::NativeFunctionRegistry engineNativeFunctions() {
             return script::Value(script::Vector2Value{object.position.x, object.position.y});
         },
         "오브젝트의 현재 위치예요.");
+    typed(
+        "builtin.entity.scale", {"entity"}, {Type::Entity}, Type::Vector2,
+        [resolve](const auto &args) {
+            auto &object = resolve(args[0]);
+            return script::Value(script::Vector2Value{object.scale.x, object.scale.y});
+        },
+        "오브젝트 크기예요.");
+    typed(
+        "builtin.entity.rotation", {"entity"}, {Type::Entity}, Type::Float,
+        [resolve](const auto &args) {
+            return script::Value(static_cast<double>(resolve(args[0]).rotationDegrees.z));
+        },
+        "오브젝트의 2D 회전 각도(도)예요.");
+    typed(
+        "builtin.entity.setRotation", {"entity", "rotation"}, {Type::Entity, Type::Float}, Type::Void,
+        [resolve](const auto &args) {
+            resolve(args[0]).rotationDegrees.z = finiteFloat(std::get<double>(args[1].data));
+            return script::Value{};
+        },
+        "오브젝트의 2D 회전을 설정해요.");
+    typed(
+        "builtin.entity.setScale", {"entity", "scale"}, {Type::Entity, Type::Vector2}, Type::Void,
+        [resolve](const auto &args) {
+            auto size = std::get<script::Vector2Value>(args[1].data);
+            auto x = finiteFloat(size.x), y = finiteFloat(size.y);
+            if (x <= 0 || y <= 0)
+                throw std::runtime_error("Entity scale must be positive.");
+            auto &object = resolve(args[0]);
+            object.scale.x = x;
+            object.scale.y = y;
+            return script::Value{};
+        },
+        "오브젝트의 2D 크기를 설정해요.");
+    typed(
+        "builtin.entity.setColor", {"entity", "color"}, {Type::Entity, Type::Color}, Type::Void,
+        [resolve](const auto &args) {
+            auto color = std::get<script::ColorValue>(args[1].data);
+            auto &object = resolve(args[0]);
+            object.color = {finiteFloat(color.r), finiteFloat(color.g), finiteFloat(color.b)};
+            return script::Value{};
+        },
+        "오브젝트 색을 설정해요.");
     typed(
         "builtin.entity.setPosition", {"entity", "position"}, {Type::Entity, Type::Vector2}, Type::Void,
         [resolve](const auto &args) {

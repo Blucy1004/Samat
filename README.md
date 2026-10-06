@@ -6,6 +6,10 @@ JM Engine is a lightweight C++20 engine project for building both 2D and 3D game
 
 Optional values, validated Entity references and compatible live program generations now share the Code/Korean AST and runtime. Invalid live candidates retain the previous generation and compatible state. Engine API metadata drives search, templates, help and numeric presets. See [v0.7 implementation, validation and capability matrix](docs/Samat-v0.7.md) for the tested subset and explicit limits; [v0.6](docs/Samat-v0.6.md) is the preceding checkpoint.
 
+## Samat v0.8 — write programs, build games
+
+Samat reads `.st` files directly. Try the interactive calculator with `build/SamatCompiler run main.st`, entering `7`, `*`, and `7` on separate lines. The starter game is [examples/Samat/pong.st](examples/Samat/pong.st); run it in the engine editor with `build/jmengine_sandbox --smoke-language examples/Samat/pong.st` or open the source in the Code workspace and press Play.
+
 ## Engine editor vertical slice
 
 The sandbox opens a resizable editor with **Scene**, **Code**, and **Game Preview** tabs. The starter scene contains a controllable 2D Player and a static floor, alongside a separate 3D cube scene view. Press Play and use Left/Right to move and Space to jump. A fixed-step prototype physics pass handles gravity and platform collisions. Stop restores the scene to its pre-play state. The editor can create, open, and save projects as readable `project.jm`, `scenes/main.scene`, and `scripts/main.samat.json` files. The Code tab has an editable Samat surface with numeric `let`/`const` declarations, parameterized `fn` functions, arithmetic expressions for numeric action values, event handlers, and a small set of object actions. Function calls and parameters lower into the same event/action AST as 訓機正音, and both surfaces can be parsed back without changing their meaning. Scene objects have visibility and five draw layers; 2D sprites render from lower layer to higher layer. Korean UI uses the installed Windows Malgun font when available. 3D cubes retain depth testing and simple directional lighting.

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(JMEngine VERSION 0.7.0 LANGUAGES C CXX)
+project(JMEngine VERSION 0.8.0 LANGUAGES C CXX)
 
 option(JMENGINE_BUILD_ENGINE "Build the SDL/OpenGL engine and editor" ON)
 option(JMENGINE_BUILD_SANDBOX "Build the JM Engine sandbox application" ON)
@@ -159,6 +159,25 @@ if(JMENGINE_BUILD_ENGINE)
 endif()
 
 if(BUILD_TESTING)
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/runner-lf.in" "7\n*\n7")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/runner-crlf.in" "7\r\n*\r\n7\r\n")
+    foreach(JM_RUNNER_CASE IN ITEMS lf crlf)
+        add_test(NAME samat_runner_${JM_RUNNER_CASE}
+            COMMAND ${CMAKE_COMMAND}
+                "-DPROGRAM=$<TARGET_FILE:Samat_cli>"
+                "-DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/main.st"
+                "-DINPUT=${CMAKE_CURRENT_BINARY_DIR}/runner-${JM_RUNNER_CASE}.in"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/RunnerSmoke.cmake")
+    endforeach()
+    if(JMENGINE_BUILD_ENGINE)
+        add_executable(samat_gameplay_tests tests/SamatGameplayRegression.cpp)
+        target_link_libraries(samat_gameplay_tests PRIVATE JMEngine::JMEngine)
+        target_compile_definitions(samat_gameplay_tests PRIVATE JM_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        if(MSVC)
+            target_compile_options(samat_gameplay_tests PRIVATE /EHsc /utf-8)
+        endif()
+        add_test(NAME samat_pong_gameplay COMMAND samat_gameplay_tests)
+    endif()
     add_executable(Samat_compiler_tests tests/CompilerRegression.cpp)
     if(JMENGINE_BUILD_ENGINE)
         target_link_libraries(Samat_compiler_tests PRIVATE JMEngine::JMEngine)

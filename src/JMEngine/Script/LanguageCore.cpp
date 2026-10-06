@@ -835,10 +835,11 @@ Value invokeBuiltin(const std::string &name, const std::vector<Value> &arguments
     if (name.rfind("builtin.math.", 0) == 0)
         return invokeBuiltin(name.substr(std::string("builtin.math.").size()), arguments, names, {});
     const std::unordered_map<std::string, std::pair<std::size_t, std::size_t>> arities{
-        {"int", {1, 1}},    {"float", {1, 1}},  {"string", {1, 1}},  {"bitXor", {2, 2}},  {"abs", {1, 1}},
-        {"sqrt", {1, 1}},   {"pow", {2, 2}},    {"clamp", {3, 3}},   {"sin", {1, 1}},     {"cos", {1, 1}},
-        {"tan", {1, 1}},    {"round", {1, 1}},  {"floor", {1, 1}},   {"ceil", {1, 1}},    {"len", {1, 1}},
-        {"length", {1, 1}}, {"assert", {1, 1}}, {"vector2", {2, 2}}, {"vector3", {3, 3}}, {"color", {3, 4}}};
+        {"int", {1, 1}},  {"float", {1, 1}},  {"string", {1, 1}}, {"bool", {1, 1}},    {"bitXor", {2, 2}},
+        {"abs", {1, 1}},  {"sqrt", {1, 1}},   {"pow", {2, 2}},    {"clamp", {3, 3}},   {"sin", {1, 1}},
+        {"cos", {1, 1}},  {"tan", {1, 1}},    {"round", {1, 1}},  {"floor", {1, 1}},   {"ceil", {1, 1}},
+        {"len", {1, 1}},  {"length", {1, 1}}, {"assert", {1, 1}}, {"vector2", {2, 2}}, {"vector3", {3, 3}},
+        {"color", {3, 4}}};
     if (auto expected = arities.find(name);
         expected != arities.end() &&
         (arguments.size() < expected->second.first || arguments.size() > expected->second.second))
@@ -875,6 +876,12 @@ Value invokeBuiltin(const std::string &name, const std::vector<Value> &arguments
     }
     if (name == "string")
         return Value(arg(0).toString());
+    if (name == "bool") {
+        if (arg(0).type() != Type::Bool && arg(0).type() != Type::Int && arg(0).type() != Type::Float &&
+            arg(0).type() != Type::String)
+            throw std::runtime_error("JM3005: bool conversion accepts Bool, Int, Float, or String.");
+        return Value(truth(arg(0)));
+    }
     if (name == "bitXor")
         return Value(std::bit_cast<std::int64_t>(static_cast<std::uint64_t>(checkedIndex(arg(0))) ^
                                                  static_cast<std::uint64_t>(checkedIndex(arg(1)))));
@@ -1409,17 +1416,12 @@ Value evaluate(const ExpressionPtr &expression, const Environment &environment, 
             }
             if (auto string = std::get_if<std::string>(&receiver.data)) {
                 const std::unordered_map<std::string, int> methods{
-                    {"substring", JM_RT_SUBSTRING},
-                    {"contains", JM_RT_CONTAINS},
-                    {"startsWith", JM_RT_STARTS_WITH},
-                    {"endsWith", JM_RT_ENDS_WITH},
-                    {"find", JM_RT_FIND},
-                    {"replace", JM_RT_REPLACE},
-                    {"split", JM_RT_SPLIT},
-                    {"trim", JM_RT_TRIM},
-                    {"upper", JM_RT_UPPER},
-                    {"lower", JM_RT_LOWER},
-                    {"codepointLength", JM_RT_CODEPOINT_LENGTH}};
+                    {"substring", JM_RT_SUBSTRING}, {"slice", JM_RT_SUBSTRING},
+                    {"contains", JM_RT_CONTAINS},   {"startsWith", JM_RT_STARTS_WITH},
+                    {"endsWith", JM_RT_ENDS_WITH},  {"find", JM_RT_FIND},
+                    {"replace", JM_RT_REPLACE},     {"split", JM_RT_SPLIT},
+                    {"trim", JM_RT_TRIM},           {"upper", JM_RT_UPPER},
+                    {"lower", JM_RT_LOWER},         {"codepointLength", JM_RT_CODEPOINT_LENGTH}};
                 auto found = methods.find(expression->left->text);
                 if (found == methods.end())
                     throw std::runtime_error("Unknown String method.");

@@ -517,10 +517,16 @@ struct Checker {
                 if (standard->returnType != Type::Any)
                     return standard->returnType;
             }
-            if (name == "int" || name == "float" || name == "string") {
+            if (name == "int" || name == "float" || name == "string" || name == "bool") {
                 if (arguments.size() != 1)
                     error("JM2003", "Conversion requires one argument.");
-                return name == "int" ? Type::Int : name == "float" ? Type::Float : Type::String;
+                if (name == "bool" && !arguments.empty() && arguments[0] != Type::Bool &&
+                    arguments[0] != Type::Int && arguments[0] != Type::Float && arguments[0] != Type::String)
+                    error("JM2003", "bool conversion accepts Bool, Int, Float, or String.");
+                return name == "int"     ? Type::Int
+                       : name == "float" ? Type::Float
+                       : name == "bool"  ? Type::Bool
+                                         : Type::String;
             }
             if (name == "bitXor")
                 return Type::Int;
