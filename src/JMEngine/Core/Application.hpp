@@ -33,6 +33,7 @@ class Application {
     std::size_t run(std::size_t maximumFrames = 0);
     void startLanguagePlay(std::string source, bool korean = false,
                            EngineScriptBackend backend = EngineScriptBackend::Interpreter);
+    void loadHaerye(std::string source);
     bool applyLanguageEdit(std::string source, bool korean = false);
     void stopPlay();
     bool isPlaying() const { return playing_; }

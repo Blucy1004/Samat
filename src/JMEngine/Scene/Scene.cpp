@@ -11,13 +11,16 @@ std::atomic<std::uint64_t> referenceToken{1};
 void Scene::invalidateReferences() { identity_ = referenceToken.fetch_add(1); }
 
 Scene::Scene(const Scene &other)
-    : objects_(other.objects_), nextId_(other.nextId_), selectedId_(other.selectedId_) {
+    : objects_(other.objects_), name_(other.name_), backgroundColor_(other.backgroundColor_),
+      nextId_(other.nextId_), selectedId_(other.selectedId_) {
     invalidateReferences();
 }
 Scene &Scene::operator=(const Scene &other) {
     if (this != &other) {
         auto objects = other.objects_;
         objects_.swap(objects);
+        name_ = other.name_;
+        backgroundColor_ = other.backgroundColor_;
         nextId_ = other.nextId_;
         selectedId_ = other.selectedId_;
         invalidateReferences();

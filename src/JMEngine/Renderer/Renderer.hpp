@@ -25,7 +25,7 @@ public:
     void drawScene(int framebufferWidth, int framebufferHeight, int viewportX, int viewportY,
                    int viewportWidth, int viewportHeight, bool twoDimensional, float cameraYaw,
                    float cameraPitch, float cameraDistance, float panX2D, float panY2D, float zoom2D,
-                   const std::vector<GameObject>& objects);
+                   const std::vector<GameObject>& objects, Vec3 backgroundColor);
 
 private:
     struct Mesh {
@@ -47,6 +47,7 @@ private:
     Mesh cube_{};
     Mesh grid_{};
     Mesh panel_{};
+    Mesh circle_{};
 };
 
 } // namespace jm

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace jm {
@@ -14,10 +15,16 @@ enum class ObjectKind {
     Sprite2D,
 };
 
+enum class SpriteShape {
+    Rectangle,
+    Circle,
+};
+
 struct GameObject {
     std::string id;
     std::uint64_t generation{};
     ObjectKind kind{ObjectKind::Cube3D};
+    SpriteShape shape{SpriteShape::Rectangle};
     std::string name;
     std::string koreanName;
     Vec3 position{0.0F, 0.0F, 0.0F};
@@ -45,6 +52,10 @@ class Scene {
     Scene(Scene &&) noexcept = default;
     Scene &operator=(Scene &&) noexcept = default;
     std::uint64_t identity() const { return identity_; }
+    const std::string &name() const { return name_; }
+    void setName(std::string name) { name_ = std::move(name); }
+    const Vec3 &backgroundColor() const { return backgroundColor_; }
+    void setBackgroundColor(Vec3 color) { backgroundColor_ = color; }
     void invalidateReferences();
 
     GameObject &create(ObjectKind kind);
@@ -61,6 +72,8 @@ class Scene {
 
   private:
     std::vector<GameObject> objects_;
+    std::string name_{"Main Scene"};
+    Vec3 backgroundColor_{14.0F / 255.0F, 18.0F / 255.0F, 27.0F / 255.0F};
     std::uint64_t nextId_{1};
     std::uint64_t identity_{};
     std::string selectedId_;

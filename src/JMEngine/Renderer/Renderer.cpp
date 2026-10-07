@@ -150,6 +150,23 @@ std::vector<Vertex> makePanelVertices() {
     };
 }
 
+std::vector<Vertex> makeCircleVertices() {
+    constexpr int segments = 48;
+    constexpr float pi = 3.14159265358979323846F;
+    std::vector<Vertex> vertices;
+    vertices.reserve(segments * 3);
+    for (int i = 0; i < segments; ++i) {
+        const float first = static_cast<float>(i) * 2.0F * pi / static_cast<float>(segments);
+        const float second = static_cast<float>(i + 1) * 2.0F * pi / static_cast<float>(segments);
+        vertices.push_back({{0.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 1.0F}, {0.0F, 0.0F, 1.0F}});
+        vertices.push_back({{0.5F * std::cos(first), 0.5F * std::sin(first), 0.0F},
+                            {1.0F, 1.0F, 1.0F}, {0.0F, 0.0F, 1.0F}});
+        vertices.push_back({{0.5F * std::cos(second), 0.5F * std::sin(second), 0.0F},
+                            {1.0F, 1.0F, 1.0F}, {0.0F, 0.0F, 1.0F}});
+    }
+    return vertices;
+}
+
 } // namespace
 
 Renderer::Renderer() {
@@ -162,6 +179,7 @@ Renderer::Renderer() {
         cube_ = createMesh(makeCubeVertices());
         grid_ = createMesh(makeGridVertices());
         panel_ = createMesh(makePanelVertices());
+        circle_ = createMesh(makeCircleVertices());
         glEnable(GL_DEPTH_TEST);
     } catch (...) {
         destroy();
@@ -208,14 +226,14 @@ void Renderer::drawMesh(const Mesh& mesh, const Matrix4& viewProjection, const M
 void Renderer::drawScene(int framebufferWidth, int framebufferHeight, int viewportX, int viewportY,
                          int viewportWidth, int viewportHeight, bool twoDimensional, float cameraYaw,
                          float cameraPitch, float cameraDistance, float panX2D, float panY2D, float zoom2D,
-                         const std::vector<GameObject>& objects) {
+                         const std::vector<GameObject>& objects, Vec3 backgroundColor) {
     if (framebufferWidth <= 0 || framebufferHeight <= 0 || viewportWidth <= 0 || viewportHeight <= 0) return;
     const PixelViewport viewport{viewportX, viewportY, viewportWidth, viewportHeight};
     const int openGlY = viewportBottomLeftY(viewport, framebufferHeight);
     glEnable(GL_SCISSOR_TEST);
     glScissor(viewportX, openGlY, viewportWidth, viewportHeight);
     glViewport(viewportX, openGlY, viewportWidth, viewportHeight);
-    glClearColor(0.055F, 0.070F, 0.105F, 1.0F);
+    glClearColor(backgroundColor.x, backgroundColor.y, backgroundColor.z, 1.0F);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     gl::UseProgram(program_);
@@ -239,7 +257,8 @@ void Renderer::drawScene(int framebufferWidth, int framebufferHeight, int viewpo
             const float angle = object.rotationDegrees.z * 0.01745329252F;
             const Matrix4 model = camera * Matrix4::translation(object.position.x, object.position.y, 0.0F) *
                                   Matrix4::rotationZ(angle) * Matrix4::scale(object.scale.x, object.scale.y, 1.0F);
-            drawMesh(panel_, projection, model, GL_TRIANGLES, false, object.color);
+            drawMesh(object.shape == SpriteShape::Circle ? circle_ : panel_, projection, model, GL_TRIANGLES,
+                     false, object.color);
         }
         glEnable(GL_DEPTH_TEST);
     } else {
@@ -267,7 +286,7 @@ void Renderer::drawScene(int framebufferWidth, int framebufferHeight, int viewpo
 }
 
 void Renderer::destroy() noexcept {
-    for (Mesh* mesh : {&cube_, &grid_, &panel_}) {
+    for (Mesh* mesh : {&cube_, &grid_, &panel_, &circle_}) {
         if (mesh->vertexBuffer != 0) gl::DeleteBuffers(1, &mesh->vertexBuffer);
         if (mesh->vertexArray != 0) gl::DeleteVertexArrays(1, &mesh->vertexArray);
         *mesh = {};
@@ -279,4 +298,3 @@ void Renderer::destroy() noexcept {
 }
 
 } // namespace jm
-

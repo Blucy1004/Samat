@@ -83,6 +83,7 @@ Json serializeObject(const GameObject& object) {
     return Json{
         {"id", object.id},
         {"kind", object.kind == ObjectKind::Cube3D ? "cube3d" : "sprite2d"},
+        {"shape", object.shape == SpriteShape::Circle ? "circle" : "rectangle"},
         {"name", object.name},
         {"koreanName", object.koreanName},
         {"transform", {
@@ -226,6 +227,10 @@ GameObject deserializeObject(const Json& value) {
     if (kind == "cube3d") object.kind = ObjectKind::Cube3D;
     else if (kind == "sprite2d") object.kind = ObjectKind::Sprite2D;
     else throw std::runtime_error("Unknown object kind: " + kind);
+    const std::string shape = value.value("shape", std::string{"rectangle"});
+    if (shape == "circle") object.shape = SpriteShape::Circle;
+    else if (shape == "rectangle") object.shape = SpriteShape::Rectangle;
+    else throw std::runtime_error("Unknown sprite shape: " + shape);
 
     const Json& transform = value.at("transform");
     object.position = readVec3(transform.at("position"), "transform.position");
@@ -294,7 +299,8 @@ void ProjectStore::save(const std::filesystem::path& root, const ProjectSettings
     const Json sceneDocument{
         {"formatVersion", 1},
         {"sceneId", "main"},
-        {"name", "Main Scene"},
+        {"name", scene.name()},
+        {"backgroundColor", toJson(scene.backgroundColor())},
         {"objects", std::move(objects)}
     };
     const Json projectDocument{
@@ -338,6 +344,9 @@ ProjectDocument ProjectStore::load(const std::filesystem::path& root) {
     }
 
     std::vector<GameObject> objects;
+    result.scene.setName(scene.value("name", std::string{"Main Scene"}));
+    if (const auto background = scene.find("backgroundColor"); background != scene.end())
+        result.scene.setBackgroundColor(readVec3(*background, "backgroundColor"));
     objects.reserve(scene.at("objects").size());
     std::unordered_set<std::string> objectIds;
     for (const Json& object : scene.at("objects")) {

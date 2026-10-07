@@ -1,6 +1,7 @@
 #include "JMEngine/Core/Application.hpp"
 
 #include "JMEngine/Project/ProjectStore.hpp"
+#include "JMEngine/Scene/Haerye.hpp"
 #include "JMEngine/Renderer/GLApi.hpp"
 #include "JMEngine/Renderer/Renderer.hpp"
 #include "JMEngine/Renderer/Viewport.hpp"
@@ -388,7 +389,7 @@ void Application::render() {
             ImGui::GetIO().DisplaySize.y, drawableWidth, drawableHeight);
         renderer_->drawScene(drawableWidth, drawableHeight, viewport.x, viewport.yFromTop, viewport.width,
                              viewport.height, twoDimensional_, cameraYaw_, cameraPitch_, cameraDistance_,
-                             cameraPanX2D_, cameraPanY2D_, zoom2D_, scene_.objects());
+                             cameraPanX2D_, cameraPanY2D_, zoom2D_, scene_.objects(), scene_.backgroundColor());
     }
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -1286,6 +1287,24 @@ void Application::startLanguagePlay(std::string source, bool korean, EngineScrip
     togglePlaying();
     if (!playing_)
         throw std::runtime_error(languageStatus_);
+}
+void Application::loadHaerye(std::string source) {
+    if (playing_)
+        throw std::runtime_error("Stop Play before replacing the Scene with Haerye.");
+    HaeryeDocument document;
+    HaeryeDiagnostic diagnostic;
+    if (!parseHaerye(source, document, diagnostic))
+        throw std::runtime_error("Haerye " + diagnostic.toString());
+    if (!validateHaerye(document, diagnostic))
+        throw std::runtime_error("Haerye " + diagnostic.toString());
+    Scene candidate = scene_;
+    if (!instantiateHaerye(document, candidate, diagnostic))
+        throw std::runtime_error("Haerye " + diagnostic.toString());
+    scene_ = std::move(candidate);
+    scene_.selectFirst(ObjectKind::Sprite2D);
+    script_ = makeDefaultScript(scene_);
+    twoDimensional_ = true;
+    scriptStatus_ = "Loaded Haerye scene: " + scene_.name();
 }
 bool Application::applyLanguageEdit(std::string source, bool korean) {
     if (!languageRuntime_) {

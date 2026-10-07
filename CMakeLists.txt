@@ -128,6 +128,7 @@ if(JMENGINE_BUILD_ENGINE)
         src/JMEngine/Renderer/GLApi.cpp
         src/JMEngine/Renderer/Renderer.cpp
         src/JMEngine/Project/ProjectStore.cpp
+        src/JMEngine/Scene/Haerye.cpp
         src/JMEngine/Script/Script.cpp
         src/JMEngine/Script/EngineScriptAPI.cpp
         src/JMEngine/Scene/Scene.cpp
@@ -177,6 +178,13 @@ if(BUILD_TESTING)
             target_compile_options(samat_gameplay_tests PRIVATE /EHsc /utf-8)
         endif()
         add_test(NAME samat_pong_gameplay COMMAND samat_gameplay_tests)
+        add_executable(haerye_regression_tests tests/HaeryeRegression.cpp)
+        target_link_libraries(haerye_regression_tests PRIVATE JMEngine::JMEngine)
+        target_compile_definitions(haerye_regression_tests PRIVATE JM_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        if(MSVC)
+            target_compile_options(haerye_regression_tests PRIVATE /EHsc /utf-8)
+        endif()
+        add_test(NAME haerye_regression COMMAND haerye_regression_tests)
     endif()
     add_executable(Samat_compiler_tests tests/CompilerRegression.cpp)
     if(JMENGINE_BUILD_ENGINE)
