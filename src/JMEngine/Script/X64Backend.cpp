@@ -2,6 +2,7 @@
 #include "JMEngine/Script/StandardLibrary.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 #include <limits>
 #include <stdexcept>

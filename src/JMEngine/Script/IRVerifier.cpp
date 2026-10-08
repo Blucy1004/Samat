@@ -2,6 +2,7 @@
 #include "JMEngine/Script/RuntimeABI.h"
 #include <algorithm>
 #include <bit>
+#include <iterator>
 #include <limits>
 #include <set>
 #include <unordered_set>
