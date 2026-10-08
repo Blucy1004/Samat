@@ -1,12 +1,40 @@
 #include "JMEngine/Core/SamatStudioSupport.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <fstream>
 #include <regex>
+#include <unordered_set>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <commdlg.h>
+#endif
 
 namespace jm::studio {
 namespace {
 constexpr std::size_t maximumScriptBytes = 16 * 1024 * 1024;
+
+const std::unordered_set<std::string_view> &samatKeywords() {
+    static const std::unordered_set<std::string_view> values{
+        "let", "const", "fn", "if", "else", "while", "for", "in", "return", "break", "continue",
+        "true", "false", "null", "and", "or", "not", "import", "on", "enum", "struct",
+        "함수", "변수", "상수", "라면", "아니라면", "동안", "반환한다", "반복하며", "반복을",
+        "멈춘다", "다음", "진행한다", "가져온다", "실행한다", "출력한다", "참", "거짓", "시작할", "때"};
+    return values;
+}
+
+const std::unordered_set<std::string_view> &samatBuiltins() {
+    static const std::unordered_set<std::string_view> values{
+        "print", "println", "assert", "len", "length", "abs", "min", "max", "round", "floor", "ceil",
+        "sqrt", "pow", "sin", "cos", "tan", "int", "float", "string", "bool", "bitXor", "vector2",
+        "vector3", "color", "range", "append", "push", "pop", "clear", "Vector2", "Vector3", "Color"};
+    return values;
+}
 
 bool validKeyName(std::string_view name) {
     return !name.empty() && name.size() <= 32 &&
@@ -79,6 +107,73 @@ std::optional<TextRange> findInputKeyString(std::string_view source, std::size_t
 }
 } // namespace
 
+std::optional<SyntaxToken> syntaxTokenAt(std::string_view source, std::size_t offset) {
+    if (offset >= source.size())
+        return std::nullopt;
+    const unsigned char first = static_cast<unsigned char>(source[offset]);
+    if (std::isspace(first))
+        return std::nullopt;
+    std::size_t end = offset + 1;
+    if (source[offset] == '#') {
+        end = source.find('\n', offset);
+        if (end == std::string_view::npos)
+            end = source.size();
+        return SyntaxToken{{offset, end}, SyntaxKind::Comment};
+    }
+    if (source[offset] == '"' || source[offset] == '\'') {
+        const char quote = source[offset];
+        bool escaped = false;
+        while (end < source.size()) {
+            if (escaped) {
+                escaped = false;
+                ++end;
+                continue;
+            }
+            if (source[end] == '\\') {
+                escaped = true;
+                ++end;
+                continue;
+            }
+            if (source[end++] == quote)
+                break;
+        }
+        return SyntaxToken{{offset, end}, SyntaxKind::String};
+    }
+    if ((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '_' || first >= 0x80) {
+        while (end < source.size()) {
+            const unsigned char ch = static_cast<unsigned char>(source[end]);
+            if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+                ch == '_' || ch >= 0x80)
+                ++end;
+            else
+                break;
+        }
+        const auto word = source.substr(offset, end - offset);
+        const auto kind = samatKeywords().contains(word) ? SyntaxKind::Keyword
+                          : samatBuiltins().contains(word) ? SyntaxKind::Builtin
+                                                           : SyntaxKind::Identifier;
+        return SyntaxToken{{offset, end}, kind};
+    }
+    if (first >= '0' && first <= '9') {
+        while (end < source.size()) {
+            const unsigned char ch = static_cast<unsigned char>(source[end]);
+            if ((ch >= '0' && ch <= '9') || ch == '_')
+                ++end;
+            else if (ch == '.' && end + 1 < source.size() && source[end + 1] != '.')
+                ++end;
+            else
+                break;
+        }
+        return SyntaxToken{{offset, end}, SyntaxKind::Number};
+    }
+    static constexpr std::string_view pairs[]{"==", "!=", "<=", ">=", "+=", "-=", "*=", "/=", "%=",
+                                               "**", "<<", ">>", "??", "?.", "->", "..", "&&", "||"};
+    for (const auto pair : pairs)
+        if (source.substr(offset, pair.size()) == pair)
+            return SyntaxToken{{offset, offset + pair.size()}, SyntaxKind::Operator};
+    return SyntaxToken{{offset, end}, SyntaxKind::Operator};
+}
+
 std::optional<TextRange> inputKeyStringAt(std::string_view source, std::size_t cursor) {
     return findInputKeyString(source, cursor);
 }
@@ -145,11 +240,68 @@ bool saveScriptFile(const std::filesystem::path &path, std::string_view source, 
     return true;
 }
 
+std::optional<std::filesystem::path> chooseOpenScriptFile(const std::filesystem::path &initialPath) {
+#ifdef _WIN32
+    std::array<wchar_t, 32768> selected{};
+    if (!initialPath.empty()) {
+        const auto encoded = initialPath.native();
+        const auto count = std::min(encoded.size(), selected.size() - 1);
+        std::copy_n(encoded.data(), count, selected.data());
+    }
+    static constexpr wchar_t filter[] = L"Samat source (*.st)\0*.st\0All files (*.*)\0*.*\0\0";
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.lpstrFilter = filter;
+    dialog.lpstrFile = selected.data();
+    dialog.nMaxFile = static_cast<DWORD>(selected.size());
+    dialog.lpstrDefExt = L"st";
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_HIDEREADONLY;
+    if (GetOpenFileNameW(&dialog))
+        return std::filesystem::path(selected.data());
+#else
+    (void)initialPath;
+#endif
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> chooseSaveScriptFile(const std::filesystem::path &initialPath) {
+#ifdef _WIN32
+    std::array<wchar_t, 32768> selected{};
+    if (!initialPath.empty()) {
+        const auto encoded = initialPath.native();
+        const auto count = std::min(encoded.size(), selected.size() - 1);
+        std::copy_n(encoded.data(), count, selected.data());
+    }
+    static constexpr wchar_t filter[] = L"Samat source (*.st)\0*.st\0\0";
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.lpstrFilter = filter;
+    dialog.lpstrFile = selected.data();
+    dialog.nMaxFile = static_cast<DWORD>(selected.size());
+    dialog.lpstrDefExt = L"st";
+    dialog.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_OVERWRITEPROMPT;
+    if (GetSaveFileNameW(&dialog))
+        return std::filesystem::path(selected.data());
+#else
+    (void)initialPath;
+#endif
+    return std::nullopt;
+}
+
 InterpreterRun::~InterpreterRun() { stop(); }
 
 bool InterpreterRun::start(script::Program program, script::RunOptions options) {
-    stop();
     std::lock_guard lifecycleLock(lifecycleMutex_);
+    if (worker_.joinable()) {
+        bool currentlyRunning = false;
+        if (state_) {
+            std::lock_guard stateLock(state_->mutex);
+            currentlyRunning = state_->snapshot.running;
+        }
+        if (currentlyRunning)
+            return false;
+        worker_.join();
+    }
     state_ = std::make_shared<State>();
     {
         std::lock_guard stateLock(state_->mutex);
@@ -157,6 +309,16 @@ bool InterpreterRun::start(script::Program program, script::RunOptions options) 
         state_->snapshot.running = true;
     }
     auto state = state_;
+    auto previousOutput = std::move(options.onOutput);
+    options.onOutput = [state, previousOutput = std::move(previousOutput)](std::string_view line) {
+        {
+            std::lock_guard lock(state->mutex);
+            state->snapshot.output.emplace_back(line);
+            state->pendingOutput.emplace_back(line);
+        }
+        if (previousOutput)
+            previousOutput(line);
+    };
     worker_ = std::jthread([state = std::move(state), program = std::move(program),
                             options = std::move(options)](std::stop_token token) mutable {
         auto previousStop = std::move(options.shouldStop);
@@ -209,6 +371,20 @@ void InterpreterRun::stop() {
         worker_.request_stop();
         worker_.join();
     }
+}
+
+std::vector<std::string> InterpreterRun::drainOutput() {
+    std::shared_ptr<State> state;
+    {
+        std::lock_guard lock(lifecycleMutex_);
+        state = state_;
+    }
+    if (!state)
+        return {};
+    std::lock_guard lock(state->mutex);
+    std::vector<std::string> result;
+    result.swap(state->pendingOutput);
+    return result;
 }
 
 RunSnapshot InterpreterRun::snapshot(bool includeOutput) const {

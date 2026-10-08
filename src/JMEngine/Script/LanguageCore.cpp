@@ -2361,6 +2361,7 @@ class Interpreter {
             ~Scope() { jm_runtime_activate(previous); }
         } scope(runtime_.get());
         output_.clear();
+        outputBytes_ = 0;
         executed_ = 0;
         for (const auto &item : parsed.statements)
             if (item.kind == Statement::Kind::Struct) {
@@ -2461,6 +2462,7 @@ class Interpreter {
             ~Scope() { jm_runtime_activate(previous); }
         } runtimeScope(runtime_.get());
         output_.clear();
+        outputBytes_ = 0;
         executed_ = 0;
         const Flow flow = initialized_ ? Flow{} : runBlock(program_.statements, globals_, false);
         if (flow.kind != Flow::Kind::Normal)
@@ -2487,6 +2489,25 @@ class Interpreter {
         if (++executed_ > options_.instructionBudget)
             throw std::runtime_error("Script stopped after reaching its instruction budget.");
     }
+    void emitOutput(std::string text) {
+        const std::size_t limit = options_.outputByteLimit;
+        if (limit != 0 && text.size() > limit - std::min(limit, outputBytes_)) {
+            const std::size_t remaining = outputBytes_ < limit ? limit - outputBytes_ : 0;
+            if (remaining != 0) {
+                text.resize(remaining);
+                outputBytes_ += text.size();
+                output_.push_back(text);
+                if (options_.onOutput)
+                    options_.onOutput(text);
+            }
+            throw std::runtime_error("JM7203: Interpreter output exceeded the configured byte limit.");
+        }
+        outputBytes_ += text.size();
+        output_.push_back(text);
+        if (options_.onOutput)
+            options_.onOutput(text);
+    }
+
     Value eval(const ExpressionPtr &expression, const std::shared_ptr<Environment> &env) {
         step();
         if (expression && expression->kind == Expression::Kind::Call &&
@@ -2504,7 +2525,7 @@ class Interpreter {
             if (auto structure = structures_.find(name); structure != structures_.end())
                 return construct(*structure->second, args, names);
             if (name == "print" || name == "println") {
-                output_.push_back(outputText(args));
+                emitOutput(outputText(args));
                 return Value{};
             }
             return invokeBuiltin(name, args, names, host_);
@@ -2522,7 +2543,7 @@ class Interpreter {
             if (auto structure = structures_.find(name); structure != structures_.end())
                 return construct(*structure->second, args, names);
             if (name == "print" || name == "println") {
-                output_.push_back(outputText(args));
+                emitOutput(outputText(args));
                 return Value{};
             }
             return invokeBuiltin(name, args, names, host_);
@@ -2953,6 +2974,7 @@ class Interpreter {
     bool initialized_{false};
     std::size_t executed_{0};
     std::size_t depth_{0};
+    std::size_t outputBytes_{0};
 };
 
 } // namespace

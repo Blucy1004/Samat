@@ -5,6 +5,7 @@
 #include "JMEngine/Script/LanguageCore.hpp"
 #include "JMEngine/Core/SamatStudioSupport.hpp"
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <array>
@@ -169,9 +170,55 @@ void surfaceCoverage() {
     require(codeResult.output == koreanResult.output &&
                 codeResult.returnValue.toString() == koreanResult.returnValue.toString(),
             "Code and Korean execution results differ.");
+
+    Program invalidCode, invalidKorean;
+    const std::string invalidSource = "fn main() -> String:\n    return 42\n";
+    require(parseCode(invalidSource, invalidCode, diagnostic), "Invalid parity source did not parse as Code.");
+    require(parseKorean(renderKorean(invalidCode), invalidKorean, diagnostic),
+            "Invalid parity source did not render and parse as Korean.");
+    std::vector<Diagnostic> invalidCodeErrors, invalidKoreanErrors;
+    const bool codeValid = check(invalidCode, invalidCodeErrors);
+    const bool koreanValid = check(invalidKorean, invalidKoreanErrors);
+    require(!codeValid && !koreanValid && invalidCodeErrors.size() == invalidKoreanErrors.size() &&
+                !invalidCodeErrors.empty() && invalidCodeErrors.front().code == invalidKoreanErrors.front().code &&
+                invalidCodeErrors.front().line == invalidKoreanErrors.front().line &&
+                invalidCodeErrors.front().message == invalidKoreanErrors.front().message,
+            "Code and Korean invalid type-check diagnostics differ.");
+
+    for (const std::string particle : {"을", "를"}) {
+        Program particleProgram;
+        const std::string particleSource = "42" + particle + " 출력한다.\n";
+        require(parseKorean(particleSource, particleProgram, diagnostic),
+                "Korean output object particle failed to parse: " + diagnostic.message);
+        const auto particleResult = execute(particleProgram);
+        require(particleResult.output == std::vector<std::string>{"42"},
+                "Korean output particle did not preserve the printed expression.");
+    }
     ++passed;
 }
 void studioSupport() {
+    const std::string syntax = "print(\"if true # stays string\", 'while') # return false\n";
+    std::vector<std::pair<std::string, jm::studio::SyntaxKind>> syntaxWords;
+    for (std::size_t offset = 0; offset < syntax.size();) {
+        if (std::isspace(static_cast<unsigned char>(syntax[offset]))) {
+            ++offset;
+            continue;
+        }
+        const auto token = jm::studio::syntaxTokenAt(syntax, offset);
+        require(token.has_value(), "Samat syntax scanner missed a non-whitespace token.");
+        syntaxWords.emplace_back(syntax.substr(token->range.begin, token->range.end - token->range.begin),
+                                 token->kind);
+        offset = token->range.end;
+    }
+    require(syntaxWords.size() >= 7 && syntaxWords[0].first == "print" &&
+                syntaxWords[0].second == jm::studio::SyntaxKind::Builtin &&
+                syntaxWords[2].first == "\"if true # stays string\"" &&
+                syntaxWords[2].second == jm::studio::SyntaxKind::String &&
+                syntaxWords[4].first == "'while'" && syntaxWords[4].second == jm::studio::SyntaxKind::String &&
+                syntaxWords.back().first == "# return false" &&
+                syntaxWords.back().second == jm::studio::SyntaxKind::Comment,
+            "Samat syntax colors classified keywords inside literals/comments as code.");
+
     std::string source = "let held = input.isHeld(\"space\")\nprint(\"space\")\n";
     const auto keyOffset = source.find("space");
     const auto range = jm::studio::inputKeyStringAt(source, keyOffset + 2);
@@ -218,6 +265,7 @@ void studioSupport() {
     options.entryFunction = "main";
     options.instructionBudget = 100'000'000;
     run.start(std::move(infinite), options);
+    require(!run.start(finite, options), "Studio run controller accepted overlapping executions.");
     run.requestStop();
     for (int attempt = 0; attempt < 5000 && !run.snapshot().completed; ++attempt)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -225,6 +273,36 @@ void studioSupport() {
     run.joinCompleted();
     require(result.completed && result.cancelled && !result.running,
             "Studio Stop did not cancel an infinite Interpreter run.");
+
+    std::vector<std::string> streamed;
+    Program streaming;
+    require(parseCode("print(\"first\")\nprint(\"second\")\n", streaming, diagnostic),
+            "Studio streaming source did not parse.");
+    RunOptions streamingOptions;
+    streamingOptions.outputByteLimit = 64;
+    require(run.start(streaming, streamingOptions), "Studio run controller did not restart after Stop.");
+    for (int attempt = 0; attempt < 5000 && !run.snapshot(false).completed; ++attempt) {
+        auto batch = run.drainOutput();
+        streamed.insert(streamed.end(), batch.begin(), batch.end());
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    auto batch = run.drainOutput();
+    streamed.insert(streamed.end(), batch.begin(), batch.end());
+    run.joinCompleted();
+    require(streamed == std::vector<std::string>{"first", "second"},
+            "Studio run output was not available incrementally.");
+
+    RunOptions boundedOutput;
+    boundedOutput.outputByteLimit = 3;
+    bool outputLimitObserved = false;
+    try {
+        Program tooMuch;
+        require(parseCode("print(\"hello\")\n", tooMuch, diagnostic), "Output cap source did not parse.");
+        (void)execute(tooMuch, boundedOutput);
+    } catch (const std::runtime_error &error) {
+        outputLimitObserved = std::string(error.what()).find("output exceeded") != std::string::npos;
+    }
+    require(outputLimitObserved, "Configured interpreter output limit was not enforced.");
     ++passed;
 }
 void studioExamples() {

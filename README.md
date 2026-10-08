@@ -1,5 +1,7 @@
 # JOSAMOSA ENGINE (JM Engine)
 
+> 사람의 뜻이 CPU에 사맛게 하노라.
+
 JM Engine is a lightweight C++20 engine project for building both 2D and 3D games. It uses SDL3 for the window and input, and OpenGL 3.3 for rendering. The goal is a small, focused engine that grows feature by feature, rather than a full production editor from day one.
 
 ## Samat / 訓C正音 v0.7 — Safe & Live (partial milestone)
@@ -14,7 +16,7 @@ Samat reads `.st` files directly. Try the interactive calculator with `build/Sam
 
 ## Samat Studio — v1.0 work in progress
 
-The **Samat Studio** tab adds standalone `.st` editing, open/save by path, Code/訓C正音 conversion, metadata-assisted completion, a key picker for `input.isHeld` / `input.wasPressed`, interpreter execution with Stop, and console/diagnostic panes. The existing game editor and Pong Play path remain separate. See [the implementation status and limits](docs/SamatStudio-v1.0.md); the current work does **not** meet the full v1.0 release criteria yet.
+The **Samat Studio** tab adds standalone `.st` editing, line numbers and Samat/訓C正音 syntax colors, automatic indentation and bracket pairing, document shortcuts, Windows native file dialogs, Code/訓C正音 conversion, metadata-assisted completion, a key picker for `input.isHeld` / `input.wasPressed`, capped cancellable interpreter execution, and console/diagnostic panes. The existing game editor and Pong Play path remain separate. See [the implementation status and limits](docs/SamatStudio-v1.0.md); the current work does **not** meet the full v1.0 release criteria yet.
 
 ## Engine editor vertical slice
 
@@ -48,7 +50,7 @@ cmake --build build --target package --config Release
 
 The Windows command targets Visual Studio 2022 x64. The generated portable ZIP includes `SamatStudio.exe`, the compiler CLI, and Studio examples. `jmengine_sandbox.exe` remains as a compatibility copy next to the Studio executable. CMake fetches SDL3 3.2.10, Dear ImGui 1.92.9b, and nlohmann/json 3.12.0; OpenGL is provided by the platform. The [Windows CI workflow](.github/workflows/samat-studio-windows.yml) builds, tests, and packages the x64 app. This Linux environment has not run that workflow or a Windows build.
 
-Run the automated regression suite with `ctest --test-dir build -C Release --output-on-failure`. It includes engine smoke, Hangul and Samat/Korean AST round-trips, sample execution, file helper, key replacement, and interpreter cancellation checks, plus compiler/backend/runtime regressions. Inside the Studio tab, use its Save button for the current `.st` document; `Ctrl+S` remains project save in the game editor.
+Run the automated regression suite with `ctest --test-dir build -C Release --output-on-failure`. It includes engine smoke, Hangul and Samat/Korean AST round-trips, sample execution, file and syntax helpers, key replacement, streaming interpreter output and cancellation checks, plus compiler/backend/runtime regressions. `Ctrl+S` saves the `.st` document in Samat Studio and the project in the game editor.
 
 ## Structure and growth path
 

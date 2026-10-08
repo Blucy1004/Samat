@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.24)
 project(JMEngine VERSION 0.8.0 LANGUAGES C CXX)
 
+if(WIN32)
+    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR CMAKE_GENERATOR_PLATFORM MATCHES "ARM" OR
+       CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM|arm|aarch64)")
+        message(FATAL_ERROR "Samat Studio portable Windows packages currently target x64 only.")
+    endif()
+endif()
+
 if(MSVC)
     # Ship the Studio with the static MSVC runtime so the portable ZIP does not
     # depend on a separately installed Visual C++ redistributable.
@@ -37,6 +44,9 @@ add_library(Samat_core
 )
 add_library(Samat::Core ALIAS Samat_core)
 target_link_libraries(Samat_core PRIVATE Samat_runtime)
+if(WIN32)
+    target_link_libraries(Samat_core PRIVATE comdlg32)
+endif()
 if(Samat_ENABLE_SANITIZERS)
     if(MSVC)
         message(FATAL_ERROR "Combined ASan/UBSan configuration requires GCC or Clang")
@@ -127,8 +137,10 @@ if(JMENGINE_BUILD_ENGINE)
         ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
         ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
         ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ImGuiColorTextEdit/TextEditor.cpp
     )
-    target_include_directories(jmengine_imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+    target_include_directories(jmengine_imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ImGuiColorTextEdit)
     target_link_libraries(jmengine_imgui PUBLIC SDL3::SDL3 OpenGL::GL)
     add_library(jmengine
         src/JMEngine/Core/Application.cpp
@@ -172,7 +184,23 @@ if(JMENGINE_BUILD_ENGINE)
 endif()
 
 if(JMENGINE_BUILD_ENGINE AND JMENGINE_BUILD_SANDBOX)
-    install(TARGETS jmengine_sandbox RUNTIME DESTINATION .)
+    if(WIN32)
+        install(TARGETS jmengine_sandbox RUNTIME_DEPENDENCY_SET SamatRuntimeDependencies
+            RUNTIME DESTINATION . COMPONENT SamatStudio)
+        install(RUNTIME_DEPENDENCY_SET SamatRuntimeDependencies
+            PRE_EXCLUDE_REGEXES "api-ms-win-.*" "ext-ms-win-.*"
+            POST_EXCLUDE_REGEXES ".*[Ww]indows[/\\\\]System32[/\\\\].*"
+                                  ".*[Ww]indows[/\\\\]WinSxS[/\\\\].*"
+            COMPONENT SamatStudio)
+        install(CODE "file(COPY_FILE \"$<TARGET_FILE:jmengine_sandbox>\" \"\${CMAKE_INSTALL_PREFIX}/jmengine_sandbox${CMAKE_EXECUTABLE_SUFFIX}\" ONLY_IF_DIFFERENT)"
+            COMPONENT SamatStudio)
+    else()
+        install(TARGETS jmengine_sandbox RUNTIME DESTINATION . COMPONENT SamatStudio)
+        install(FILES "$<TARGET_FILE_DIR:jmengine_sandbox>/jmengine_sandbox${CMAKE_EXECUTABLE_SUFFIX}"
+            DESTINATION . COMPONENT SamatStudio)
+    endif()
+    install(FILES third_party/ImGuiColorTextEdit/LICENSE DESTINATION licenses/ImGuiColorTextEdit
+        RENAME LICENSE.txt COMPONENT SamatStudio)
     install(DIRECTORY examples/Samat/v1.0 DESTINATION examples/Samat)
     install(FILES examples/Samat/pong.st DESTINATION examples/Samat)
     set(CPACK_PACKAGE_NAME "SamatStudio")
@@ -266,6 +294,12 @@ if(JMENGINE_BUILD_BENCHMARKS)
 endif()
 
 # The AOT runtime archive is relocatable beside the installed CLI.
-install(TARGETS Samat_cli Samat_runtime
-    RUNTIME DESTINATION bin COMPONENT Samat
-    ARCHIVE DESTINATION bin COMPONENT Samat)
+if(WIN32 AND JMENGINE_BUILD_ENGINE AND JMENGINE_BUILD_SANDBOX)
+    install(TARGETS Samat_cli Samat_runtime RUNTIME_DEPENDENCY_SET SamatRuntimeDependencies
+        RUNTIME DESTINATION bin COMPONENT Samat
+        ARCHIVE DESTINATION bin COMPONENT Samat)
+else()
+    install(TARGETS Samat_cli Samat_runtime
+        RUNTIME DESTINATION bin COMPONENT Samat
+        ARCHIVE DESTINATION bin COMPONENT Samat)
+endif()

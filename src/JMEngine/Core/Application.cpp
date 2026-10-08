@@ -13,6 +13,7 @@
 #include <imgui_impl_opengl3.h>
 #include <imgui_impl_sdl3.h>
 #include <misc/cpp/imgui_stdlib.h>
+#include <TextEditor.h>
 
 #include <algorithm>
 #include <cctype>
@@ -55,6 +56,39 @@ std::string scriptKeyName(SDL_Scancode scancode) {
 std::string diagnosticText(const ScriptDiagnostic &diagnostic) {
     return diagnostic.line > 0 ? "줄 " + std::to_string(diagnostic.line) + ": " + diagnostic.message
                                : diagnostic.message;
+}
+
+bool tokenizeSamat(const char *begin, const char *end, const char *&tokenBegin, const char *&tokenEnd,
+                   TextEditor::PaletteIndex &color) {
+    const std::string_view remaining(begin, static_cast<std::size_t>(end - begin));
+    const auto token = studio::syntaxTokenAt(remaining, 0);
+    if (!token)
+        return false;
+    tokenBegin = begin;
+    tokenEnd = begin + token->range.end;
+    switch (token->kind) {
+    case studio::SyntaxKind::Keyword: color = TextEditor::PaletteIndex::Keyword; break;
+    case studio::SyntaxKind::Builtin: color = TextEditor::PaletteIndex::KnownIdentifier; break;
+    case studio::SyntaxKind::Number: color = TextEditor::PaletteIndex::Number; break;
+    case studio::SyntaxKind::String: color = *begin == '\'' ? TextEditor::PaletteIndex::CharLiteral
+                                                            : TextEditor::PaletteIndex::String; break;
+    case studio::SyntaxKind::Comment: color = TextEditor::PaletteIndex::Comment; break;
+    case studio::SyntaxKind::Identifier: color = TextEditor::PaletteIndex::Identifier; break;
+    case studio::SyntaxKind::Operator: color = TextEditor::PaletteIndex::Punctuation; break;
+    }
+    return true;
+}
+
+const TextEditor::LanguageDefinition &samatLanguageDefinition() {
+    static const TextEditor::LanguageDefinition definition = [] {
+        TextEditor::LanguageDefinition language;
+        language.mName = "Samat / 訓C正音";
+        language.mSingleLineComment = "#";
+        language.mAutoIndentation = true;
+        language.mTokenize = tokenizeSamat;
+        return language;
+    }();
+    return definition;
 }
 
 struct LanguageCompletionContext {
@@ -158,49 +192,49 @@ std::string beginnerDiagnostic(const script::Diagnostic &diagnostic) {
     return message;
 }
 
-int languageCompletionCallback(ImGuiInputTextCallbackData *data) {
-    auto *context = static_cast<LanguageCompletionContext *>(data->UserData);
-    if (context == nullptr)
-        return 0;
-    int start = data->CursorPos;
-    while (start > 0) {
-        const unsigned char ch = static_cast<unsigned char>(data->Buf[start - 1]);
-        if (!std::isalnum(ch) && ch != '_' && ch != '.' && ch < 128)
-            break;
-        --start;
+std::size_t editorByteOffset(const std::string &source, TextEditor::Coordinates position) {
+    std::size_t offset = 0;
+    int line = 0;
+    while (line < position.mLine && offset < source.size()) {
+        const auto newline = source.find('\n', offset);
+        if (newline == std::string::npos)
+            return source.size();
+        offset = newline + 1;
+        ++line;
     }
-    context->wordStart = start;
-    int end = data->CursorPos;
-    while (end < data->BufTextLen) {
-        const unsigned char ch = static_cast<unsigned char>(data->Buf[end]);
-        if (!std::isalnum(ch) && ch != '_' && ch != '.' && ch < 128)
-            break;
-        ++end;
-    }
-    context->wordEnd = end;
-    context->cursor = data->CursorPos;
-    const std::string prefix(data->Buf + start, static_cast<std::size_t>(data->CursorPos - start));
-    context->prefix = prefix;
-    context->matches.clear();
-    for (const std::string &word : context->words) {
-        if (prefix.empty() || word.rfind(prefix, 0) == 0)
-            context->matches.push_back(word);
-    }
-    if (data->EventFlag == ImGuiInputTextFlags_CallbackCompletion && !context->matches.empty()) {
-        std::string completion = context->matches.front();
-        for (std::size_t index = 1; index < context->matches.size(); ++index) {
-            std::size_t common = 0;
-            while (common < completion.size() && common < context->matches[index].size() &&
-                   completion[common] == context->matches[index][common])
-                ++common;
-            completion.resize(common);
-        }
-        if (completion.size() > prefix.size()) {
-            data->DeleteChars(start, data->CursorPos - start);
-            data->InsertChars(start, completion.c_str());
+    int column = 0;
+    while (offset < source.size() && source[offset] != '\n' && column < position.mColumn) {
+        const unsigned char ch = static_cast<unsigned char>(source[offset]);
+        if (ch == '\t') {
+            column += 4 - (column % 4);
+            ++offset;
+        } else {
+            std::size_t width = ch < 0x80 ? 1 : ch < 0xE0 ? 2 : ch < 0xF0 ? 3 : 4;
+            offset = std::min(source.size(), offset + width);
+            ++column;
         }
     }
-    return 0;
+    return offset;
+}
+
+TextEditor::Coordinates editorPositionAt(const std::string &source, std::size_t offset) {
+    TextEditor::Coordinates position{};
+    offset = std::min(offset, source.size());
+    for (std::size_t i = 0; i < offset;) {
+        const unsigned char ch = static_cast<unsigned char>(source[i]);
+        if (ch == '\n') {
+            ++position.mLine;
+            position.mColumn = 0;
+            ++i;
+        } else if (ch == '\t') {
+            position.mColumn += 4 - (position.mColumn % 4);
+            ++i;
+        } else {
+            i += ch < 0x80 ? 1 : ch < 0xE0 ? 2 : ch < 0xF0 ? 3 : 4;
+            ++position.mColumn;
+        }
+    }
+    return position;
 }
 
 const char *languageStarterCode = "fn add(a, b):\n"
@@ -218,6 +252,11 @@ Application::Application(ApplicationConfig config) : config_(std::move(config)) 
     projectId_ = initialProject.projectId;
     script_ = makeDefaultScript(scene_);
     languageCodeBuffer_ = languageStarterCode;
+    languageEditor_ = std::make_unique<TextEditor>();
+    languageEditor_->SetLanguageDefinition(samatLanguageDefinition());
+    languageEditor_->SetTabSize(4);
+    languageEditor_->SetText(languageCodeBuffer_);
+    languageEditorTextSnapshot_ = languageCodeBuffer_;
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         throw std::runtime_error(std::string{"SDL initialization failed: "} + SDL_GetError());
     }
@@ -340,10 +379,17 @@ void Application::processEvents() {
         if (imguiPlatformReady_)
             ImGui_ImplSDL3_ProcessEvent(&event);
         const ImGuiIO &io = ImGui::GetIO();
+        const bool languageEditorFocused = activeWorkspace_ == 1 && languageEditor_ &&
+                                           languageEditor_->IsFocused();
         switch (event.type) {
         case SDL_EVENT_QUIT:
         case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-            running_ = false;
+            if (languageDirty_) {
+                languagePendingDocumentAction_ = 4;
+                languageQuitPending_ = true;
+                requestedWorkspace_ = 1;
+            } else
+                running_ = false;
             break;
         case SDL_EVENT_KEY_DOWN:
             if (event.key.repeat)
@@ -357,7 +403,7 @@ void Application::processEvents() {
                 spacePressedThisFrame_ = true;
             if (playing_ && !io.WantTextInput)
                 keysPressedThisFrame_.insert(scriptKeyName(event.key.scancode));
-            if (io.WantCaptureKeyboard || playing_)
+            if (io.WantCaptureKeyboard || playing_ || languageEditorFocused)
                 break;
             if (event.key.key == SDLK_ESCAPE)
                 running_ = false;
@@ -706,7 +752,8 @@ void Application::drawCodePanel() {
         drawLegacyCodePanel();
         ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem("Samat Studio")) {
+    if (ImGui::BeginTabItem("Samat Studio", nullptr,
+                            languageQuitPending_ ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None)) {
         drawLanguageCorePanel();
         ImGui::EndTabItem();
     }
@@ -837,6 +884,8 @@ void Application::drawLegacyCodePanel() {
 
 void Application::drawLanguageCorePanel() {
     using namespace script;
+    for (const auto &line : languageRun_.drainOutput())
+        languageOutput_ += line + '\n';
     auto runAtFrameStart = languageRun_.snapshot(false);
     if (runAtFrameStart.completed && runAtFrameStart.generation > languageLastRunGeneration_) {
         runAtFrameStart = languageRun_.snapshot();
@@ -935,6 +984,9 @@ void Application::drawLanguageCorePanel() {
                 languagePathInput_.clear();
                 languageStatus_ = "예제를 새 문서로 열었어요. 저장할 때 위치와 이름을 정해 주세요.";
             }
+        } else if (languagePendingDocumentAction_ == 4) {
+            languageQuitPending_ = false;
+            running_ = false;
         }
         languagePendingFilePath_.clear();
         languagePendingDocumentAction_ = 0;
@@ -957,30 +1009,51 @@ void Application::drawLanguageCorePanel() {
     ImGui::SameLine();
     if (ImGui::SmallButton("열기")) {
         languagePendingDocumentAction_ = 2;
-        languagePendingFilePath_ = languagePathInput_;
-        if (languageDirty_)
-            ImGui::OpenPopup("저장하지 않은 변경사항");
+#ifdef _WIN32
+        if (const auto selected = studio::chooseOpenScriptFile(
+                languagePathInput_.empty() ? std::filesystem::path{} : utf8ToPath(languagePathInput_)))
+            languagePendingFilePath_ = pathToUtf8(*selected);
         else
+            languagePendingDocumentAction_ = 0;
+#else
+        languagePendingFilePath_ = languagePathInput_;
+#endif
+        if (languagePendingDocumentAction_ != 0 && languageDirty_)
+            ImGui::OpenPopup("저장하지 않은 변경사항");
+        else if (languagePendingDocumentAction_ != 0)
             performDocumentAction();
     }
     ImGui::SameLine();
     if (ImGui::SmallButton("저장"))
         saveDocument();
     ImGui::SameLine();
-    if (ImGui::SmallButton("다른 이름으로 저장"))
+    if (ImGui::SmallButton("다른 이름으로 저장")) {
+#ifdef _WIN32
+        if (const auto selected = studio::chooseSaveScriptFile(
+                languagePathInput_.empty() ? std::filesystem::path{} : utf8ToPath(languagePathInput_))) {
+            languagePathInput_ = pathToUtf8(*selected);
+            saveDocument(true);
+        }
+#else
         saveDocument(true);
+ #endif
+    }
+    if (languageQuitPending_)
+        ImGui::OpenPopup("저장하지 않은 변경사항");
     if (ImGui::BeginPopupModal("저장하지 않은 변경사항", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted("현재 소스에 저장하지 않은 변경사항이 있어요.");
+        ImGui::TextUnformatted(languagePendingDocumentAction_ == 4
+                                   ? "종료하기 전에 저장하지 않은 변경사항이 있어요."
+                                   : "현재 소스에 저장하지 않은 변경사항이 있어요.");
         if (languageFilePath_.empty())
             ImGui::TextUnformatted("새 문서는 취소 후 다른 이름으로 저장한 다음 작업을 이어가세요.");
-        if (ImGui::Button("저장 후 계속")) {
+        if (ImGui::Button(languagePendingDocumentAction_ == 4 ? "저장 후 종료" : "저장 후 계속")) {
             if (saveDocument(false, false)) {
                 performDocumentAction();
                 ImGui::CloseCurrentPopup();
             }
         }
         ImGui::SameLine();
-        if (ImGui::Button("버리고 계속")) {
+        if (ImGui::Button(languagePendingDocumentAction_ == 4 ? "버리고 종료" : "버리고 계속")) {
             performDocumentAction();
             ImGui::CloseCurrentPopup();
         }
@@ -988,6 +1061,7 @@ void Application::drawLanguageCorePanel() {
         if (ImGui::Button("취소")) {
             languagePendingDocumentAction_ = 0;
             languagePendingFilePath_.clear();
+            languageQuitPending_ = false;
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -1035,7 +1109,19 @@ void Application::drawLanguageCorePanel() {
                                                {"Pong 게임", "examples/Samat/pong.st"}};
         for (const auto &sample : samples)
             if (ImGui::Selectable(sample.label)) {
-                languagePendingFilePath_ = sample.path;
+                std::filesystem::path samplePath = utf8ToPath(sample.path);
+                if (!std::filesystem::exists(samplePath)) {
+                    if (const char *basePath = SDL_GetBasePath(); basePath != nullptr) {
+                        const auto executableDirectory = utf8ToPath(basePath);
+                        const auto packagedPath = executableDirectory / samplePath;
+                        const auto developmentPath = executableDirectory.parent_path() / samplePath;
+                        if (std::filesystem::exists(packagedPath))
+                            samplePath = packagedPath;
+                        else if (std::filesystem::exists(developmentPath))
+                            samplePath = developmentPath;
+                    }
+                }
+                languagePendingFilePath_ = pathToUtf8(samplePath);
                 languagePendingDocumentAction_ = 3;
                 if (languageDirty_)
                     ImGui::OpenPopup("저장하지 않은 변경사항");
@@ -1130,6 +1216,7 @@ void Application::drawLanguageCorePanel() {
             } else {
                 RunOptions options;
                 options.instructionBudget = 1'000'000;
+                options.outputByteLimit = 1 * 1024 * 1024;
                 options.recursionLimit = 128;
                 bool hasMain = false, hasActions = false;
                 for (const auto &statement : program.statements) {
@@ -1144,12 +1231,15 @@ void Application::drawLanguageCorePanel() {
                 if (hasMain && !hasActions)
                     options.entryFunction = "main";
                 options.eventName = "start";
-                languageRun_.start(std::move(program), std::move(options));
-                languageCompiled_ = true;
-                languageErrorLine_ = 0;
-                languageDiagnostic_.clear();
-                languageStatus_ = "실행 중 · 정지 버튼으로 언제든 멈출 수 있어요.";
-                languageOutput_.clear();
+                if (languageRun_.start(std::move(program), std::move(options))) {
+                    languageCompiled_ = true;
+                    languageErrorLine_ = 0;
+                    languageDiagnostic_.clear();
+                    languageStatus_ = "실행 중 · 정지 버튼으로 언제든 멈출 수 있어요.";
+                    languageOutput_.clear();
+                } else {
+                    languageStatus_ = "이전 실행이 아직 끝나지 않았어요.";
+                }
             }
         }
     }
@@ -1337,17 +1427,66 @@ void Application::drawLanguageCorePanel() {
     ImGui::TableSetupColumn("Run Output", ImGuiTableColumnFlags_WidthStretch, 0.38F);
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    ImGuiInputTextFlags flags = ImGuiInputTextFlags_CallbackCompletion | ImGuiInputTextFlags_CallbackAlways;
     ImGui::TextUnformatted("소스 편집");
     ImGui::TextDisabled("현재 문법: %s%s", languageKoreanSyntax_ ? "訓C正音" : "Samat",
                         languageDirty_ ? " · 수정됨" : "");
     ImGui::TextUnformatted("편집기");
     ImGui::SameLine();
-    ImGui::TextDisabled("오류 줄 표시 · Ctrl+Space 후보 · Tab 공통 자동완성");
-    const bool editorChanged = ImGui::InputTextMultiline("##jm-language-core", &languageCodeBuffer_,
-                                                         ImVec2(-1.0F, editorHeight), flags,
-                                                         languageCompletionCallback, &completion);
+    ImGui::TextDisabled("줄 번호 · 문법 강조 · 자동 들여쓰기/괄호 · Ctrl+Space 자동완성");
+    if (languageEditorTextSnapshot_ != languageCodeBuffer_) {
+        languageEditor_->SetText(languageCodeBuffer_);
+        languageEditorTextSnapshot_ = languageCodeBuffer_;
+    }
+    TextEditor::ErrorMarkers errorMarkers;
+    if (languageErrorLine_ > 0)
+        errorMarkers.emplace(static_cast<int>(languageErrorLine_), languageDiagnostic_);
+    languageEditor_->SetErrorMarkers(errorMarkers);
+    languageEditor_->SetTabCallback([&completion, editor = languageEditor_.get()](bool shift) {
+        if (shift)
+            return false;
+        const std::string source = editor->GetText();
+        const int cursor = static_cast<int>(editorByteOffset(source, editor->GetCursorPosition()));
+        int start = cursor;
+        while (start > 0) {
+            const unsigned char ch = static_cast<unsigned char>(source[static_cast<std::size_t>(start - 1)]);
+            if (!std::isalnum(ch) && ch != '_' && ch != '.' && ch < 0x80)
+                break;
+            --start;
+        }
+        int end = cursor;
+        while (end < static_cast<int>(source.size())) {
+            const unsigned char ch = static_cast<unsigned char>(source[static_cast<std::size_t>(end)]);
+            if (!std::isalnum(ch) && ch != '_' && ch != '.' && ch < 0x80)
+                break;
+            ++end;
+        }
+        const std::string prefix = source.substr(static_cast<std::size_t>(start),
+                                                 static_cast<std::size_t>(cursor - start));
+        std::vector<std::string_view> matches;
+        for (const auto &word : completion.words)
+            if (prefix.empty() || word.rfind(prefix, 0) == 0)
+                matches.push_back(word);
+        if (matches.empty())
+            return false;
+        std::string common(matches.front());
+        for (std::size_t i = 1; i < matches.size(); ++i) {
+            std::size_t length = 0;
+            while (length < common.size() && length < matches[i].size() && common[length] == matches[i][length])
+                ++length;
+            common.resize(length);
+        }
+        if (common.size() <= prefix.size())
+            return false;
+        editor->SetSelection(editorPositionAt(source, static_cast<std::size_t>(start)),
+                             editorPositionAt(source, static_cast<std::size_t>(end)));
+        editor->InsertText(common);
+        return true;
+    });
+    languageEditor_->Render("##jm-language-core", ImVec2(-1.0F, editorHeight), true);
+    const bool editorChanged = languageEditor_->IsTextChanged();
     if (editorChanged) {
+        languageCodeBuffer_ = languageEditor_->GetText();
+        languageEditorTextSnapshot_ = languageCodeBuffer_;
         languageDirty_ = true;
         Program parsed;
         Diagnostic diagnostic;
@@ -1360,7 +1499,62 @@ void Application::drawLanguageCorePanel() {
             languageStatus_ = languageBeginnerMode_ ? beginnerDiagnostic(diagnostic) : diagnostic.message;
         }
     }
-    const bool editorFocused = ImGui::IsItemActive();
+    const bool editorFocused = languageEditor_->IsFocused();
+    if (editorFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) {
+#ifdef _WIN32
+        if (languageFilePath_.empty()) {
+            if (const auto selected = studio::chooseSaveScriptFile()) {
+                languagePathInput_ = pathToUtf8(*selected);
+                saveDocument(true);
+            }
+        } else
+#endif
+            saveDocument();
+    }
+    if (editorFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N)) {
+        languagePendingDocumentAction_ = 1;
+        if (languageDirty_)
+            ImGui::OpenPopup("저장하지 않은 변경사항");
+        else
+            performDocumentAction();
+    }
+    if (editorFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O)) {
+#ifdef _WIN32
+        if (const auto selected = studio::chooseOpenScriptFile()) {
+            languagePendingDocumentAction_ = 2;
+            languagePendingFilePath_ = pathToUtf8(*selected);
+            if (languageDirty_)
+                ImGui::OpenPopup("저장하지 않은 변경사항");
+            else
+                performDocumentAction();
+        }
+#else
+        languageStatus_ = "파일 경로를 입력한 뒤 열기 버튼을 사용해 주세요.";
+#endif
+    }
+
+    const auto cursorPosition = languageEditor_->GetCursorPosition();
+    completion.cursor = static_cast<int>(editorByteOffset(languageCodeBuffer_, cursorPosition));
+    completion.wordStart = completion.cursor;
+    while (completion.wordStart > 0) {
+        const unsigned char ch = static_cast<unsigned char>(languageCodeBuffer_[completion.wordStart - 1]);
+        if (!std::isalnum(ch) && ch != '_' && ch != '.' && ch < 0x80)
+            break;
+        --completion.wordStart;
+    }
+    completion.wordEnd = completion.cursor;
+    while (completion.wordEnd < static_cast<int>(languageCodeBuffer_.size())) {
+        const unsigned char ch = static_cast<unsigned char>(languageCodeBuffer_[completion.wordEnd]);
+        if (!std::isalnum(ch) && ch != '_' && ch != '.' && ch < 0x80)
+            break;
+        ++completion.wordEnd;
+    }
+    completion.prefix = languageCodeBuffer_.substr(completion.wordStart,
+                                                    completion.cursor - completion.wordStart);
+    completion.matches.clear();
+    for (const auto &word : completion.words)
+        if (completion.prefix.empty() || word.rfind(completion.prefix, 0) == 0)
+            completion.matches.push_back(word);
     if (editorFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Space))
         ImGui::OpenPopup("Samat 자동완성");
     if (!completion.matches.empty() && ImGui::BeginPopup("Samat 자동완성")) {
@@ -1375,12 +1569,13 @@ void Application::drawLanguageCorePanel() {
                     detail != completion.descriptions.end() && !detail->second.empty())
                     ImGui::SetTooltip("%s", detail->second.c_str());
             if (selected) {
-                const std::size_t start = static_cast<std::size_t>(
-                    std::clamp(completion.wordStart, 0, static_cast<int>(languageCodeBuffer_.size())));
-                const std::size_t end = static_cast<std::size_t>(
-                    std::clamp(completion.wordEnd, static_cast<int>(start),
-                               static_cast<int>(languageCodeBuffer_.size())));
-                languageCodeBuffer_.replace(start, end - start, suggestion);
+                const auto start = static_cast<std::size_t>(completion.wordStart);
+                const auto end = static_cast<std::size_t>(completion.wordEnd);
+                languageEditor_->SetSelection(editorPositionAt(languageCodeBuffer_, start),
+                                              editorPositionAt(languageCodeBuffer_, end));
+                languageEditor_->InsertText(suggestion);
+                languageCodeBuffer_ = languageEditor_->GetText();
+                languageEditorTextSnapshot_ = languageCodeBuffer_;
                 languageDirty_ = true;
                 ImGui::CloseCurrentPopup();
             }
@@ -1434,8 +1629,11 @@ void Application::drawLanguageCorePanel() {
                 continue;
             if (ImGui::Selectable(key.label.c_str())) {
                 if (languageKeyRangeValid_ && languageKeyRange_.end <= languageCodeBuffer_.size()) {
-                    languageCodeBuffer_.replace(languageKeyRange_.begin,
-                                                languageKeyRange_.end - languageKeyRange_.begin, key.name);
+                    languageEditor_->SetSelection(editorPositionAt(languageCodeBuffer_, languageKeyRange_.begin),
+                                                  editorPositionAt(languageCodeBuffer_, languageKeyRange_.end));
+                    languageEditor_->InsertText(key.name);
+                    languageCodeBuffer_ = languageEditor_->GetText();
+                    languageEditorTextSnapshot_ = languageCodeBuffer_;
                     languageDirty_ = true;
                 }
                 languageKeyRangeValid_ = false;

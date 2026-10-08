@@ -244,6 +244,8 @@ struct RunOptions {
     std::string eventName;
     std::function<bool(std::string_view)> moduleResolver;
     std::shared_ptr<const ir::NativeFunctionRegistry> nativeMetadata;
+    std::size_t outputByteLimit{};
+    std::function<void(std::string_view)> onOutput;
 };
 
 struct ExecutionResult {

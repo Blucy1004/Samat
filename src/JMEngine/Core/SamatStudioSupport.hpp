@@ -19,6 +19,13 @@ struct TextRange {
     std::size_t end{};
 };
 
+enum class SyntaxKind { Keyword, Identifier, Builtin, Number, String, Comment, Operator };
+struct SyntaxToken {
+    TextRange range;
+    SyntaxKind kind{SyntaxKind::Identifier};
+};
+std::optional<SyntaxToken> syntaxTokenAt(std::string_view source, std::size_t offset);
+
 // Returns the string contents range only for input.isHeld("...") and
 // input.wasPressed("...") arguments at the supplied byte cursor position.
 std::optional<TextRange> inputKeyStringAt(std::string_view source, std::size_t cursor);
@@ -26,6 +33,8 @@ bool replaceInputKeyString(std::string &source, std::size_t cursor, std::string_
 
 bool loadScriptFile(const std::filesystem::path &path, std::string &source, std::string &error);
 bool saveScriptFile(const std::filesystem::path &path, std::string_view source, std::string &error);
+std::optional<std::filesystem::path> chooseOpenScriptFile(const std::filesystem::path &initialPath = {});
+std::optional<std::filesystem::path> chooseSaveScriptFile(const std::filesystem::path &initialPath = {});
 
 struct RunSnapshot {
     std::uint64_t generation{};
@@ -52,11 +61,13 @@ class InterpreterRun {
     void joinCompleted();
     void stop();
     RunSnapshot snapshot(bool includeOutput = true) const;
+    std::vector<std::string> drainOutput();
 
   private:
     struct State {
         mutable std::mutex mutex;
         RunSnapshot snapshot;
+        std::vector<std::string> pendingOutput;
     };
     mutable std::mutex lifecycleMutex_;
     std::shared_ptr<State> state_;

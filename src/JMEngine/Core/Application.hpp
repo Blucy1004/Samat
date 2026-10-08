@@ -14,6 +14,8 @@
 #include <string>
 #include <unordered_set>
 
+class TextEditor;
+
 namespace jm {
 
 class Renderer;
@@ -74,6 +76,8 @@ class Application {
     std::string languagePendingFilePath_;
     std::string languageKeySearch_;
     std::string languageDiagnostic_;
+    std::string languageEditorTextSnapshot_;
+    std::unique_ptr<TextEditor> languageEditor_;
     studio::TextRange languageKeyRange_{};
     studio::InterpreterRun languageRun_;
     std::uint64_t languageLastRunGeneration_{};
@@ -107,6 +111,7 @@ class Application {
     bool languageKoreanSyntax_{false};
     bool languageBeginnerMode_{true};
     bool languageDirty_{false};
+    bool languageQuitPending_{false};
     bool languageKeyRangeValid_{false};
     bool languagePlayEnabled_{false};
     int languagePlayBackend_{};
