@@ -3,6 +3,7 @@ execute_process(
     INPUT_FILE "${INPUT}"
     OUTPUT_VARIABLE output
     ERROR_VARIABLE error
+    ENCODING UTF-8
     RESULT_VARIABLE status)
 
 if(NOT status EQUAL 0)
