@@ -27,6 +27,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(Samat_runtime STATIC src/JMEngine/Script/RuntimeABI.cpp)
 set_target_properties(Samat_runtime PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(Samat_runtime PUBLIC cxx_std_20)
+if(MSVC)
+    target_compile_options(Samat_runtime PRIVATE /EHsc /utf-8)
+endif()
 
 add_library(Samat_core
     src/JMEngine/Script/LanguageCore.cpp

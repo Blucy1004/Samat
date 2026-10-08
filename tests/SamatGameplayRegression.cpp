@@ -16,7 +16,15 @@ std::string sourceFile(const std::filesystem::path &path) {
     std::ifstream input(path, std::ios::binary);
     if (!input)
         throw std::runtime_error("Cannot read " + path.string());
-    return {std::istreambuf_iterator<char>(input), {}};
+    const std::string source{std::istreambuf_iterator<char>(input), {}};
+    std::string normalized;
+    normalized.reserve(source.size());
+    for (size_t i = 0; i < source.size(); ++i) {
+        if (source[i] == '\r' && i + 1 < source.size() && source[i + 1] == '\n')
+            continue;
+        normalized.push_back(source[i]);
+    }
+    return normalized;
 }
 jm::script::Program parse(const std::string &source) {
     jm::script::Program program;
