@@ -3,10 +3,14 @@
 #endif
 #include "JMEngine/Script/JMIR.hpp"
 #include "JMEngine/Script/LanguageCore.hpp"
+#include "JMEngine/Core/SamatStudioSupport.hpp"
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <array>
 #include <filesystem>
+#include <functional>
+#include <fstream>
 #include <iostream>
 #include <random>
 #if !defined(_WIN32)
@@ -47,6 +51,211 @@ void roundTrip(const Program &program) {
     require(structurallyEqual(program, korean), "Code/Korean shared AST mismatch.\n" + koreanText);
     require(parseCode(renderCode(korean), code, diagnostic), "Code renderer parse failed.");
     require(structurallyEqual(korean, code), "Korean/Code shared AST mismatch.");
+}
+void requireSurfaceCoverage(const Program &program) {
+    constexpr std::size_t statementKindCount =
+        static_cast<std::size_t>(Statement::Kind::Struct) + 1;
+    constexpr std::size_t expressionKindCount =
+        static_cast<std::size_t>(Expression::Kind::Tuple) + 1;
+    std::array<std::size_t, statementKindCount> statements{};
+    std::array<std::size_t, expressionKindCount> expressions{};
+    std::function<void(const ExpressionPtr &)> visitExpression;
+    std::function<void(const StatementList &)> visitStatements;
+    visitExpression = [&](const ExpressionPtr &value) {
+        if (!value)
+            return;
+        ++expressions.at(static_cast<std::size_t>(value->kind));
+        visitExpression(value->left);
+        visitExpression(value->right);
+        for (const auto &element : value->elements)
+            visitExpression(element);
+        for (const auto &[_, element] : value->entries)
+            visitExpression(element);
+        for (const auto &argument : value->arguments)
+            visitExpression(argument.value);
+    };
+    visitStatements = [&](const StatementList &items) {
+        for (const auto &item : items) {
+            ++statements.at(static_cast<std::size_t>(item.kind));
+            visitExpression(item.target);
+            visitExpression(item.expression);
+            visitExpression(item.rangeEnd);
+            visitStatements(item.body);
+            visitStatements(item.alternative);
+        }
+    };
+    visitStatements(program.statements);
+    for (std::size_t i = 0; i < statements.size(); ++i)
+        require(statements[i] != 0,
+                "AST surface corpus is missing Statement::Kind " + std::to_string(i) + ".");
+    for (std::size_t i = 0; i < expressions.size(); ++i)
+        require(expressions[i] != 0,
+                "AST surface corpus is missing Expression::Kind " + std::to_string(i) + ".");
+}
+void surfaceCoverage() {
+    // Keep at least one construction of every public AST statement and expression
+    // kind in the Code <-> Korean renderer contract. New AST kinds should update
+    // this corpus so one surface cannot silently fall behind.
+    const std::string source =
+        "import jm.math\n"
+        "import \"modules/support.st\"\n"
+        "enum Direction:\n"
+        "    North = 0\n"
+        "    South = 1\n"
+        "struct Point:\n"
+        "    x: Float\n"
+        "    y: Float\n"
+        "const absent: Int? = null\n"
+        "let values: List<Int> = [1, 2, 3]\n"
+        "let lookup: Map<String, Int> = {\"answer\": 42}\n"
+        "let pair: Tuple = (1, \"two\")\n"
+        "let point = Point(x: 1.5, y: 2.5)\n"
+        "let optionalValue = absent?.value ?? 0\n"
+        "values[0] = -values[1] + +2 * (3 ** 2) % 5\n"
+        "values[0] += 1\n"
+        "lookup[\"answer\"] = lookup[\"answer\"]\n"
+        "print(point.x, pair[0], [1, 2][0], lookup.answer, Direction.North)\n"
+        "fn combine(a: Int, b: Int) -> Int:\n"
+        "    let total: Int = a + b\n"
+        "    if total >= 10 and total != 12:\n"
+        "        return total\n"
+        "    else:\n"
+        "        return 0\n"
+        "fn walk(items: List<Int>) -> Int:\n"
+        "    let total = 0\n"
+        "    for item in items:\n"
+        "        if item == 0:\n"
+        "            continue\n"
+        "        total += item\n"
+        "    for index in 0..3:\n"
+        "        if index > 1:\n"
+        "            break\n"
+        "        total += index\n"
+        "    while total < 20:\n"
+        "        total += 1\n"
+        "    return total\n"
+        "on key.a.pressed:\n"
+        "    print(combine(8), walk(values))\n"
+        "fn empty():\n"
+        "    return\n";
+
+    Program program;
+    Diagnostic diagnostic;
+    require(parseCode(source, program, diagnostic),
+            "AST coverage source did not parse at line " + std::to_string(diagnostic.line) + ": " +
+                diagnostic.message + "\n" + source);
+    requireSurfaceCoverage(program);
+    roundTrip(program);
+
+    const std::string behavior =
+        "fn sum(limit: Int) -> Int:\n"
+        "    let total: Int = 0\n"
+        "    for index in 0..limit:\n"
+        "        total += index\n"
+        "    return total\n"
+        "let answer = sum(5)\n"
+        "print(answer)\n";
+    Program codeProgram, koreanProgram;
+    require(parseCode(behavior, codeProgram, diagnostic), "Parity behavior source did not parse.");
+    require(parseKorean(renderKorean(codeProgram), koreanProgram, diagnostic),
+            "Korean parity program did not parse: " + diagnostic.message);
+    std::vector<Diagnostic> codeErrors, koreanErrors;
+    require(check(codeProgram, codeErrors) == check(koreanProgram, koreanErrors) &&
+                codeErrors.size() == koreanErrors.size(),
+            "Code and Korean type-check results differ.");
+    RunOptions options;
+    const auto codeResult = execute(codeProgram, options);
+    const auto koreanResult = execute(koreanProgram, options);
+    require(codeResult.output == koreanResult.output &&
+                codeResult.returnValue.toString() == koreanResult.returnValue.toString(),
+            "Code and Korean execution results differ.");
+    ++passed;
+}
+void studioSupport() {
+    std::string source = "let held = input.isHeld(\"space\")\nprint(\"space\")\n";
+    const auto keyOffset = source.find("space");
+    const auto range = jm::studio::inputKeyStringAt(source, keyOffset + 2);
+    require(range && source.substr(range->begin, range->end - range->begin) == "space",
+            "Smart key picker did not locate the input string argument.");
+    require(jm::studio::replaceInputKeyString(source, keyOffset + 2, "left") &&
+                source.find("input.isHeld(\"left\")") != std::string::npos &&
+                source.find("print(\"space\")") != std::string::npos,
+            "Smart key picker changed text outside the selected key literal.");
+    require(!jm::studio::replaceInputKeyString(source, source.find("print(\"space\")") + 8, "right"),
+            "Smart key picker accepted a string outside a supported input call.");
+
+    const auto directory = std::filesystem::temp_directory_path() /
+                           ("samat-studio-regression-" + std::to_string(
+                               std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(directory);
+    const auto path = directory / "roundtrip.st";
+    std::string error, loaded;
+    require(jm::studio::saveScriptFile(path, source, error), "Studio save failed: " + error);
+    require(jm::studio::loadScriptFile(path, loaded, error) && loaded == source,
+            "Studio open did not preserve the saved source: " + error);
+    require(!jm::studio::saveScriptFile(directory / "wrong.stcript", source, error),
+            "Studio allowed saving outside the .st source format.");
+    std::filesystem::remove_all(directory);
+
+    Program finite, infinite;
+    Diagnostic diagnostic;
+    require(parseCode("fn main() -> Int:\n    print(\"ready\")\n    return 42\n", finite, diagnostic),
+            "Studio finite run source did not parse.");
+    jm::studio::InterpreterRun run;
+    RunOptions options;
+    options.entryFunction = "main";
+    require(run.start(finite, options), "Studio run controller did not start.");
+    for (int attempt = 0; attempt < 5000 && !run.snapshot().completed; ++attempt)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    auto result = run.snapshot();
+    run.joinCompleted();
+    require(result.completed && !result.running && result.output == std::vector<std::string>{"ready"} &&
+                result.returnValue.toString() == "42",
+            "Studio run controller did not publish the Interpreter result.");
+
+    require(parseCode("fn main():\n    while true:\n        continue\n", infinite, diagnostic),
+            "Studio cancellation source did not parse.");
+    options.entryFunction = "main";
+    options.instructionBudget = 100'000'000;
+    run.start(std::move(infinite), options);
+    run.requestStop();
+    for (int attempt = 0; attempt < 5000 && !run.snapshot().completed; ++attempt)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    result = run.snapshot();
+    run.joinCompleted();
+    require(result.completed && result.cancelled && !result.running,
+            "Studio Stop did not cancel an infinite Interpreter run.");
+    ++passed;
+}
+void studioExamples() {
+    struct Example {
+        const char *file;
+        bool korean;
+        const char *expected;
+    };
+    const Example examples[]{{"hello.st", false, "Hello, Samat!"},
+                             {"calculator.st", false, "Result:"},
+                             {"conditions-loops.st", false, "Total:"},
+                             {"functions.st", false, "5! = 120"},
+                             {"functions-korean.st", true, "120"}};
+    for (const auto &example : examples) {
+        const auto path = std::filesystem::path(JM_SOURCE_DIR) / "examples/Samat/v1.0" / example.file;
+        std::ifstream input(path, std::ios::binary);
+        require(static_cast<bool>(input), "Missing Samat Studio example: " + path.string());
+        const std::string source{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+        Program program;
+        Diagnostic diagnostic;
+        const bool parsed = example.korean ? parseKorean(source, program, diagnostic)
+                                           : parseCode(source, program, diagnostic);
+        require(parsed, "Samat Studio example did not parse: " + path.string() + ": " + diagnostic.message);
+        std::vector<Diagnostic> errors;
+        require(check(program, errors), "Samat Studio example failed type checking: " + path.string());
+        RunOptions options;
+        auto result = execute(program, options);
+        require(!result.output.empty() && result.output.back().find(example.expected) != std::string::npos,
+                "Samat Studio example output differed: " + path.string());
+    }
+    ++passed;
 }
 void fault(const std::string &source, const std::string &fragment) {
     bool failed = false;
@@ -444,6 +653,9 @@ int main() {
         scalar("numeric conversions", "fn main():\n    return int(float(40) + 2.9)\n", "42", false);
         scalar("right associative exponent", "fn main() -> Float:\n    return 2.0 ** 3.0 ** 2.0\n", "512",
                false);
+        surfaceCoverage();
+        studioSupport();
+        studioExamples();
         scalar("modulo assignment", "fn main():\n    let value = 142\n    value %= 100\n    return value\n",
                "42");
         fault("fn main():\n    return 1 << 64\n", "JM3004");

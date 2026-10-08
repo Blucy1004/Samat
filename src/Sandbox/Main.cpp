@@ -18,7 +18,7 @@ int main(int argc, char **argv) {
                  arg != "--smoke-live" && arg != "--smoke-backend" && arg != "--haerye" &&
                  arg != "--language") ||
                 ++i >= argc)
-                throw std::runtime_error("Usage: jmengine_sandbox [--smoke-frames count] [--smoke-language "
+                throw std::runtime_error("Usage: SamatStudio [--smoke-frames count] [--smoke-language "
                                          "file] [--smoke-cycles count] [--smoke-live candidate] "
                                          "[--haerye scene.hy] [--language logic.st]");
             if (arg == "--smoke-frames") {
@@ -54,7 +54,7 @@ int main(int argc, char **argv) {
             throw std::runtime_error("--language can be started only once per sandbox process.");
         if (cycles > 1 && (script.empty() || !frames))
             throw std::runtime_error("Repeated Play smoke requires a script and bounded frames.");
-        jm::Application app({"JOSAMOSA ENGINE | Samat v0.7", 1280, 720});
+        jm::Application app({"Samat Studio | JM Engine", 1280, 720});
         if (!haeryeFile.empty()) {
             std::ifstream input(haeryeFile, std::ios::binary);
             if (!input)

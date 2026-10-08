@@ -7,6 +7,7 @@
 #include "JMEngine/Renderer/Viewport.hpp"
 #include "JMEngine/Script/JMIR.hpp"
 #include "JMEngine/Script/LanguageCore.hpp"
+#include "JMEngine/Script/StandardLibrary.hpp"
 
 #include <imgui.h>
 #include <imgui_impl_opengl3.h>
@@ -18,7 +19,9 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -57,10 +60,103 @@ std::string diagnosticText(const ScriptDiagnostic &diagnostic) {
 struct LanguageCompletionContext {
     std::vector<std::string> words;
     std::vector<std::string> matches;
+    std::unordered_map<std::string, std::string> descriptions;
     std::string prefix;
     int wordStart{0};
+    int wordEnd{0};
     int cursor{0};
 };
+
+void addCompletionSymbol(LanguageCompletionContext &context, const std::string &name,
+                         const std::string &description = {}) {
+    if (name.empty())
+        return;
+    context.words.push_back(name);
+    if (!description.empty())
+        context.descriptions[name] = description;
+}
+
+void collectExpressionCompletions(const script::ExpressionPtr &expression,
+                                  LanguageCompletionContext &context) {
+    if (!expression)
+        return;
+    if (expression->kind == script::Expression::Kind::Identifier)
+        addCompletionSymbol(context, expression->text, "현재 파일에서 사용한 이름입니다.");
+    if (expression->kind == script::Expression::Kind::Member)
+        addCompletionSymbol(context, expression->text.starts_with('?') ? expression->text.substr(1)
+                                                                        : expression->text,
+                            "현재 파일에서 사용한 속성 또는 함수입니다.");
+    collectExpressionCompletions(expression->left, context);
+    collectExpressionCompletions(expression->right, context);
+    for (const auto &element : expression->elements)
+        collectExpressionCompletions(element, context);
+    for (const auto &[_, element] : expression->entries)
+        collectExpressionCompletions(element, context);
+    for (const auto &argument : expression->arguments)
+        collectExpressionCompletions(argument.value, context);
+}
+
+void collectStatementCompletions(const script::StatementList &statements,
+                                 LanguageCompletionContext &context) {
+    for (const auto &statement : statements) {
+        if (statement.kind == script::Statement::Kind::Variable ||
+            statement.kind == script::Statement::Kind::Function ||
+            statement.kind == script::Statement::Kind::Enum ||
+            statement.kind == script::Statement::Kind::Struct ||
+            statement.kind == script::Statement::Kind::Import) {
+            if (statement.kind == script::Statement::Kind::Function) {
+                std::string signature = statement.name + "(";
+                for (std::size_t i = 0; i < statement.parameters.size(); ++i) {
+                    if (i)
+                        signature += ", ";
+                    signature += statement.parameters[i];
+                    if (i < statement.parameterTypes.size() && statement.parameterTypes[i] != script::Type::Any)
+                        signature += ": " + script::annotationName(
+                                                   statement.parameterTypes[i],
+                                                   i < statement.parameterElementTypes.size()
+                                                       ? statement.parameterElementTypes[i]
+                                                       : script::Type::Any);
+                }
+                signature += ")";
+                addCompletionSymbol(context, statement.name, "함수 설명 · " + signature);
+            } else
+                addCompletionSymbol(context, statement.name,
+                                    statement.kind == script::Statement::Kind::Import
+                                        ? "현재 파일에서 가져오는 모듈입니다."
+                                        : "현재 파일에 선언된 이름입니다.");
+        }
+        for (const auto &parameter : statement.parameters)
+            addCompletionSymbol(context, parameter, "함수 매개변수입니다.");
+        for (const auto &field : statement.body)
+            if (statement.kind == script::Statement::Kind::Enum ||
+                statement.kind == script::Statement::Kind::Struct)
+                addCompletionSymbol(context, field.name, "자료형의 멤버입니다.");
+        collectExpressionCompletions(statement.target, context);
+        collectExpressionCompletions(statement.expression, context);
+        collectExpressionCompletions(statement.rangeEnd, context);
+        collectStatementCompletions(statement.body, context);
+        collectStatementCompletions(statement.alternative, context);
+    }
+}
+
+std::string beginnerDiagnostic(const script::Diagnostic &diagnostic) {
+    const auto &message = diagnostic.message;
+    if (message.find("Unknown variable") != std::string::npos ||
+        message.find("Unknown identifier") != std::string::npos)
+        return "이 이름을 찾지 못했어요. 철자를 확인하거나 먼저 변수를 선언해 보세요.";
+    if (message.find("Expected a value") != std::string::npos ||
+        message.find("Expected expression") != std::string::npos)
+        return "여기에 값이나 계산식이 필요해요. 예: print(42)";
+    if (message.find("Expected ')' ") != std::string::npos ||
+        message.find("Expected ']' ") != std::string::npos ||
+        message.find("Expected '}' ") != std::string::npos)
+        return "괄호 짝이 맞지 않아요. 여는 괄호와 닫는 괄호를 확인해 보세요.";
+    if (message.find("Cannot divide by zero") != std::string::npos)
+        return "0으로 나눌 수 없어요. 나누는 값이 0인지 확인해 보세요.";
+    if (message.find("requires") != std::string::npos && message.find("arguments") != std::string::npos)
+        return "함수에 필요한 입력값 수가 맞지 않아요. 괄호 안의 매개변수를 확인해 보세요.";
+    return message;
+}
 
 int languageCompletionCallback(ImGuiInputTextCallbackData *data) {
     auto *context = static_cast<LanguageCompletionContext *>(data->UserData);
@@ -74,6 +170,14 @@ int languageCompletionCallback(ImGuiInputTextCallbackData *data) {
         --start;
     }
     context->wordStart = start;
+    int end = data->CursorPos;
+    while (end < data->BufTextLen) {
+        const unsigned char ch = static_cast<unsigned char>(data->Buf[end]);
+        if (!std::isalnum(ch) && ch != '_' && ch != '.' && ch < 128)
+            break;
+        ++end;
+    }
+    context->wordEnd = end;
     context->cursor = data->CursorPos;
     const std::string prefix(data->Buf + start, static_cast<std::size_t>(data->CursorPos - start));
     context->prefix = prefix;
@@ -184,6 +288,7 @@ Application::~Application() {
 }
 
 void Application::shutdown() noexcept {
+    languageRun_.stop();
     if (imguiRendererReady_) {
         ImGui_ImplOpenGL3_Shutdown();
         imguiRendererReady_ = false;
@@ -243,15 +348,16 @@ void Application::processEvents() {
         case SDL_EVENT_KEY_DOWN:
             if (event.key.repeat)
                 break;
-            if (event.key.key == SDLK_F5 && (event.key.mod & SDL_KMOD_SHIFT) == 0)
+            if (!io.WantTextInput && event.key.key == SDLK_F5 && (event.key.mod & SDL_KMOD_SHIFT) == 0)
                 togglePlaying();
-            if (event.key.key == SDLK_F5 && (event.key.mod & SDL_KMOD_SHIFT) != 0 && playing_)
+            if (!io.WantTextInput && event.key.key == SDLK_F5 &&
+                (event.key.mod & SDL_KMOD_SHIFT) != 0 && playing_)
                 togglePlaying();
             if (event.key.key == SDLK_SPACE && playing_ && !io.WantTextInput)
                 spacePressedThisFrame_ = true;
             if (playing_ && !io.WantTextInput)
                 keysPressedThisFrame_.insert(scriptKeyName(event.key.scancode));
-            if (io.WantCaptureKeyboard)
+            if (io.WantCaptureKeyboard || playing_)
                 break;
             if (event.key.key == SDLK_ESCAPE)
                 running_ = false;
@@ -405,7 +511,7 @@ void Application::drawEditorUI() {
     const float toolbarWidth = std::min(920.0F, std::max(700.0F, io.DisplaySize.x - 20.0F));
     ImGui::SetNextWindowPos(ImVec2((io.DisplaySize.x - toolbarWidth) * 0.5F, 8.0F), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(toolbarWidth, 72.0F), ImGuiCond_Always);
-    if (ImGui::Begin("JM Engine Toolbar", nullptr, ImGuiWindowFlags_NoCollapse)) {
+    if (ImGui::Begin("Samat Studio Toolbar", nullptr, ImGuiWindowFlags_NoCollapse)) {
         if (ImGui::Button(playing_ ? "■ 정지" : "▶ 실행", ImVec2(85.0F, 30.0F)))
             togglePlaying();
         ImGui::SameLine();
@@ -600,7 +706,7 @@ void Application::drawCodePanel() {
         drawLegacyCodePanel();
         ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem("Samat 코어")) {
+    if (ImGui::BeginTabItem("Samat Studio")) {
         drawLanguageCorePanel();
         ImGui::EndTabItem();
     }
@@ -731,6 +837,162 @@ void Application::drawLegacyCodePanel() {
 
 void Application::drawLanguageCorePanel() {
     using namespace script;
+    auto runAtFrameStart = languageRun_.snapshot(false);
+    if (runAtFrameStart.completed && runAtFrameStart.generation > languageLastRunGeneration_) {
+        runAtFrameStart = languageRun_.snapshot();
+        languageLastRunGeneration_ = runAtFrameStart.generation;
+        languageCompiled_ = runAtFrameStart.error.empty();
+        languageErrorLine_ = 0;
+        languageDiagnostic_ = runAtFrameStart.error;
+        if (runAtFrameStart.cancelled)
+            languageStatus_ = "실행을 정지했어요.";
+        else if (!runAtFrameStart.error.empty())
+            languageStatus_ = "실행 오류 · " + runAtFrameStart.error;
+        else
+            languageStatus_ = "실행 완료 · " + std::to_string(runAtFrameStart.instructionsExecuted) +
+                              "개 명령 처리";
+        languageOutput_.clear();
+        for (const auto &line : runAtFrameStart.output)
+            languageOutput_ += line + '\n';
+        if (!runAtFrameStart.returnValue.isNull())
+            languageOutput_ += "결과: " + runAtFrameStart.returnValue.toString() + '\n';
+    }
+    languageRun_.joinCompleted();
+    auto resetDocument = [&] {
+        languageCodeBuffer_ = languageStarterCode;
+        languageFilePath_.clear();
+        languagePathInput_.clear();
+        languageKoreanSyntax_ = false;
+        languageDirty_ = false;
+        languageErrorLine_ = 0;
+        languageOutput_.clear();
+        languageDiagnostic_.clear();
+        languageStatus_ = "새 Samat 문서를 만들었어요.";
+    };
+    auto openDocument = [&](const std::string &requestedPath) {
+        if (requestedPath.empty()) {
+            languageStatus_ = ".st 파일 경로를 입력해 주세요.";
+            return false;
+        }
+        std::string source, error;
+        if (!studio::loadScriptFile(utf8ToPath(requestedPath), source, error)) {
+            languageStatus_ = error;
+            return false;
+        }
+        Program candidate;
+        Diagnostic codeDiagnostic, koreanDiagnostic;
+        const bool codeParsed = parseCode(source, candidate, codeDiagnostic);
+        const bool koreanParsed = codeParsed || parseKorean(source, candidate, koreanDiagnostic);
+        if (codeParsed)
+            languageKoreanSyntax_ = false;
+        else if (koreanParsed)
+            languageKoreanSyntax_ = true;
+        else
+            languageKoreanSyntax_ = source.find("함수 ") != std::string::npos ||
+                                    source.find("변수 ") != std::string::npos ||
+                                    source.find("정한다") != std::string::npos;
+        languageCodeBuffer_ = std::move(source);
+        languageFilePath_ = requestedPath;
+        languagePathInput_ = requestedPath;
+        languageDirty_ = false;
+        const auto &parseDiagnostic = codeParsed ? codeDiagnostic : koreanDiagnostic;
+        languageErrorLine_ = codeParsed || koreanParsed ? 0 : parseDiagnostic.line;
+        languageDiagnostic_ = codeParsed || koreanParsed ? std::string{} : parseDiagnostic.message;
+        languageOutput_.clear();
+        languageStatus_ = codeParsed || koreanParsed
+                              ? "파일을 열었어요. 문법이 맞지 않아도 편집할 수 있습니다."
+                              : languageBeginnerMode_ ? beginnerDiagnostic(parseDiagnostic)
+                                                      : parseDiagnostic.message;
+        return true;
+    };
+    auto saveDocument = [&](bool saveAs = false, bool allowPathInput = true) {
+        const std::string targetPath = saveAs || (languageFilePath_.empty() && allowPathInput)
+                                           ? languagePathInput_
+                                           : languageFilePath_;
+        if (targetPath.empty()) {
+            languageStatus_ = "저장할 .st 파일 경로를 입력해 주세요.";
+            return false;
+        }
+        std::string error;
+        if (!studio::saveScriptFile(utf8ToPath(targetPath), languageCodeBuffer_, error)) {
+            languageStatus_ = error;
+            return false;
+        }
+        languageFilePath_ = targetPath;
+        languagePathInput_ = targetPath;
+        languageDirty_ = false;
+        languageStatus_ = "저장했어요 · " + targetPath;
+        return true;
+    };
+    auto performDocumentAction = [&] {
+        if (languagePendingDocumentAction_ == 1)
+            resetDocument();
+        else if (languagePendingDocumentAction_ == 2)
+            openDocument(languagePendingFilePath_);
+        else if (languagePendingDocumentAction_ == 3) {
+            if (openDocument(languagePendingFilePath_)) {
+                languageFilePath_.clear();
+                languagePathInput_.clear();
+                languageStatus_ = "예제를 새 문서로 열었어요. 저장할 때 위치와 이름을 정해 주세요.";
+            }
+        }
+        languagePendingFilePath_.clear();
+        languagePendingDocumentAction_ = 0;
+    };
+    ImGui::TextUnformatted("Samat Studio");
+    ImGui::SameLine();
+    ImGui::Checkbox("초보자 모드", &languageBeginnerMode_);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("도움말과 쉬운 오류 설명만 바꿉니다. 언어 기능과 실행 방식은 같습니다.");
+    ImGui::SetNextItemWidth(std::max(180.0F, ImGui::GetContentRegionAvail().x - 260.0F));
+    ImGui::InputText("파일 경로 (.st)", &languagePathInput_);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("새로 만들기")) {
+        languagePendingDocumentAction_ = 1;
+        if (languageDirty_)
+            ImGui::OpenPopup("저장하지 않은 변경사항");
+        else
+            performDocumentAction();
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("열기")) {
+        languagePendingDocumentAction_ = 2;
+        languagePendingFilePath_ = languagePathInput_;
+        if (languageDirty_)
+            ImGui::OpenPopup("저장하지 않은 변경사항");
+        else
+            performDocumentAction();
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("저장"))
+        saveDocument();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("다른 이름으로 저장"))
+        saveDocument(true);
+    if (ImGui::BeginPopupModal("저장하지 않은 변경사항", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("현재 소스에 저장하지 않은 변경사항이 있어요.");
+        if (languageFilePath_.empty())
+            ImGui::TextUnformatted("새 문서는 취소 후 다른 이름으로 저장한 다음 작업을 이어가세요.");
+        if (ImGui::Button("저장 후 계속")) {
+            if (saveDocument(false, false)) {
+                performDocumentAction();
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("버리고 계속")) {
+            performDocumentAction();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("취소")) {
+            languagePendingDocumentAction_ = 0;
+            languagePendingFilePath_.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::TextDisabled("현재 문서: %s", languageFilePath_.empty() ? "새 문서" : languageFilePath_.c_str());
     if (ImGui::SmallButton(languageKoreanSyntax_ ? "문법: 訓C正音" : "Syntax: Code")) {
         Program program;
         Diagnostic diagnostic;
@@ -739,12 +1001,17 @@ void Application::drawLanguageCorePanel() {
             try {
                 languageCodeBuffer_ = languageKoreanSyntax_ ? renderCode(program) : renderKorean(program);
                 languageKoreanSyntax_ = !languageKoreanSyntax_;
+                languageDirty_ = true;
+                languageErrorLine_ = 0;
                 languageStatus_ = "같은 AST의 구문 표현을 변환했어요.";
             } catch (const std::exception &error) {
                 languageStatus_ = error.what();
             }
-        } else
-            languageStatus_ = diagnostic.message;
+        } else {
+            languageErrorLine_ = diagnostic.line;
+            languageDiagnostic_ = diagnostic.message;
+            languageStatus_ = languageBeginnerMode_ ? beginnerDiagnostic(diagnostic) : diagnostic.message;
+        }
     }
     ImGui::SameLine();
     ImGui::TextDisabled("Code / Korean Syntax → same JM AST");
@@ -754,8 +1021,33 @@ void Application::drawLanguageCorePanel() {
     };
     ImGui::TextDisabled("독립 Samat · Parser → AST → Runtime · 엔진 장면 없이 계산 코드 실행");
     ImGui::SameLine();
+    if (ImGui::BeginCombo("예제 선택", "Samat v1.0")) {
+        struct SampleEntry {
+            const char *label;
+            const char *path;
+        };
+        static constexpr SampleEntry samples[]{{"Hello World", "examples/Samat/v1.0/hello.st"},
+                                               {"계산기", "examples/Samat/v1.0/calculator.st"},
+                                               {"조건문과 반복문", "examples/Samat/v1.0/conditions-loops.st"},
+                                               {"함수 호출", "examples/Samat/v1.0/functions.st"},
+                                               {"訓C正音 함수 예제",
+                                                "examples/Samat/v1.0/functions-korean.st"},
+                                               {"Pong 게임", "examples/Samat/pong.st"}};
+        for (const auto &sample : samples)
+            if (ImGui::Selectable(sample.label)) {
+                languagePendingFilePath_ = sample.path;
+                languagePendingDocumentAction_ = 3;
+                if (languageDirty_)
+                    ImGui::OpenPopup("저장하지 않은 변경사항");
+                else
+                    performDocumentAction();
+            }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
     if (ImGui::SmallButton("기본 코드")) {
         languageCodeBuffer_ = languageStarterCode;
+        languageDirty_ = true;
         languageStatus_ = "기본 계산 코드를 불러왔어요.";
         languageOutput_.clear();
     }
@@ -768,6 +1060,7 @@ void Application::drawLanguageCorePanel() {
                                   : "fn factorial(n):\n    if n <= 1:\n        return 1\n    return n * "
                                     "factorial(n - 1)\n\nprint(factorial(5))\n";
         languageStatus_ = "재귀 함수 예제를 불러왔어요.";
+        languageDirty_ = true;
         languageOutput_.clear();
     }
     ImGui::SameLine();
@@ -779,6 +1072,7 @@ void Application::drawLanguageCorePanel() {
                 : "fn factorial(n):\n    if n <= 1:\n        return 1\n    return n * factorial(n - 1)\n\nfn "
                   "main():\n    return factorial(10)\n";
         languageStatus_ = "네이티브 x64 대상으로 사용할 factorial/main 예제예요.";
+        languageDirty_ = true;
         languageOutput_.clear();
     }
     ImGui::SameLine();
@@ -790,6 +1084,7 @@ void Application::drawLanguageCorePanel() {
             "print(n)\n"
             "    n += 1\n";
         languageStatus_ = "FizzBuzz 예제를 불러왔어요.";
+        languageDirty_ = true;
         languageOutput_.clear();
     }
 
@@ -804,22 +1099,37 @@ void Application::drawLanguageCorePanel() {
             if (!errors.empty())
                 diagnostic = errors.front();
         }
-        languageStatus_ =
-            languageCompiled_ ? "컴파일 성공 · 문법을 JM AST로 변환했어요." : diagnostic.message;
+        languageErrorLine_ = languageCompiled_ ? 0 : diagnostic.line;
+        languageDiagnostic_ = languageCompiled_ ? std::string{} : diagnostic.message;
+        languageStatus_ = languageCompiled_ ? "컴파일 성공 · 문법을 JM AST로 변환했어요."
+                                            : languageBeginnerMode_ ? beginnerDiagnostic(diagnostic)
+                                                                    : diagnostic.message;
         languageOutput_.clear();
     }
     ImGui::SameLine();
-    if (ImGui::Button("실행")) {
+    const bool runActive = languageRun_.snapshot(false).running;
+    ImGui::BeginDisabled(runActive);
+    if (ImGui::Button("실행 · Interpreter")) {
         Program program;
         Diagnostic diagnostic;
         if (!parseEditorProgram(program, diagnostic)) {
             languageCompiled_ = false;
-            languageStatus_ = diagnostic.message;
+            languageErrorLine_ = diagnostic.line;
+            languageDiagnostic_ = diagnostic.message;
+            languageStatus_ = languageBeginnerMode_ ? beginnerDiagnostic(diagnostic) : diagnostic.message;
             languageOutput_.clear();
         } else {
-            try {
+            std::vector<Diagnostic> errors;
+            if (!check(program, errors)) {
+                languageCompiled_ = false;
+                const auto &error = errors.front();
+                languageErrorLine_ = error.line;
+                languageDiagnostic_ = error.message;
+                languageStatus_ = languageBeginnerMode_ ? beginnerDiagnostic(error) : error.message;
+                languageOutput_.clear();
+            } else {
                 RunOptions options;
-                options.instructionBudget = 100'000;
+                options.instructionBudget = 1'000'000;
                 options.recursionLimit = 128;
                 bool hasMain = false, hasActions = false;
                 for (const auto &statement : program.statements) {
@@ -834,23 +1144,27 @@ void Application::drawLanguageCorePanel() {
                 if (hasMain && !hasActions)
                     options.entryFunction = "main";
                 options.eventName = "start";
-                const ExecutionResult result = execute(program, options);
+                languageRun_.start(std::move(program), std::move(options));
                 languageCompiled_ = true;
-                languageStatus_ =
-                    "실행 완료 · " + std::to_string(result.instructionsExecuted) + "개 명령 처리";
-                languageOutput_.clear();
-                for (const std::string &line : result.output)
-                    languageOutput_ += line + '\n';
-                if (!options.entryFunction.empty())
-                    languageOutput_ += "결과: " + result.returnValue.toString() + "\n";
-            } catch (const std::exception &error) {
-                languageCompiled_ = false;
-                languageStatus_ = error.what();
+                languageErrorLine_ = 0;
+                languageDiagnostic_.clear();
+                languageStatus_ = "실행 중 · 정지 버튼으로 언제든 멈출 수 있어요.";
                 languageOutput_.clear();
             }
         }
     }
+    ImGui::EndDisabled();
     ImGui::SameLine();
+    ImGui::BeginDisabled(!runActive);
+    if (ImGui::Button("정지")) {
+        languageRun_.requestStop();
+        languageStatus_ = "실행 중인 코드를 멈추고 있어요.";
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("현재 사용자 권한으로 실행됩니다. 신뢰할 수 있는 .st 파일만 실행하세요.");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(runActive);
     if (ImGui::Button("x64 네이티브 main 실행")) {
         Program program;
         Diagnostic diagnostic;
@@ -961,42 +1275,236 @@ void Application::drawLanguageCorePanel() {
             }
     }
     ImGui::EndDisabled();
+    ImGui::EndDisabled();
     if (!ir::LLVMBackend::available())
         ImGui::TextDisabled("LLVM 개발 패키지가 없어 LLVM JIT / IR / AOT가 비활성화돼 있어요.");
 
-    const float helpHeight = 92.0F;
-    const float resultHeight = languageOutput_.empty()
-                                   ? 34.0F
-                                   : (languageOutput_.find("JM IR") != std::string::npos ? 190.0F : 90.0F);
-    const float editorHeight =
-        std::max(120.0F, ImGui::GetContentRegionAvail().y - helpHeight - resultHeight - 54.0F);
+    const float editorHeight = std::max(180.0F, ImGui::GetContentRegionAvail().y - 160.0F);
     LanguageCompletionContext completion;
-    completion.words = {"let",    "const",  "fn",       "if",   "else",  "while", "for", "in",
-                        "return", "break",  "continue", "true", "false", "null",  "and", "or",
-                        "not",    "print",  "assert",   "len",  "abs",   "min",   "max", "round",
-                        "floor",  "ceil",   "sqrt",     "pow",  "sin",   "cos",   "tan", "vector2",
-                        "color",  "append", "push",     "pop",  "clear", "length"};
+    const std::vector<std::string> codeKeywords{
+        "let", "const", "fn", "if", "else", "while", "for", "in", "return", "break", "continue",
+        "true", "false", "null", "and", "or", "not", "import", "on", "enum", "struct"};
+    const std::vector<std::string> koreanKeywords{
+        "함수", "변수", "상수", "라면", "아니라면", "동안", "반환한다", "반복하며", "반복을 멈춘다.",
+        "다음 반복을 진행한다.", "가져온다", "실행한다", "출력한다", "참", "거짓", "시작할 때:"};
+    const std::vector<std::string> builtinNames{
+        "print", "println", "assert", "len", "length", "abs", "min", "max", "round", "floor", "ceil",
+        "sqrt", "pow", "sin", "cos", "tan", "int", "float", "string", "bool", "bitXor", "vector2",
+        "vector3", "color", "range", "append", "push", "pop", "clear", "Vector2", "Vector3", "Color"};
+    for (const auto &word : codeKeywords)
+        addCompletionSymbol(completion, word, "Samat 문법 키워드입니다.");
+    if (languageKoreanSyntax_)
+        for (const auto &word : koreanKeywords)
+            addCompletionSymbol(completion, word, "訓C正音 문법 키워드입니다.");
+    for (const auto &word : builtinNames)
+        if (const auto info = standardFunction(word))
+            addCompletionSymbol(completion, word, info->documentation + " · 모듈 " + info->module + " · " +
+                                                               std::to_string(info->minimumArity) + "개 이상 인자");
+        else
+            addCompletionSymbol(completion, word, "Samat 내장 함수 또는 값입니다.");
+    for (const auto &type : {"Int", "Float", "Bool", "String", "List", "Map", "Tuple", "Range", "Vector2",
+                             "Vector3", "Color", "Entity", "Optional", "정수", "실수", "논리", "문자열",
+                             "목록", "지도", "숫자"})
+        addCompletionSymbol(completion, type, "Samat 기본 자료형입니다.");
+    for (const auto &module : {"math", "console", "collections", "jm.random", "jm.time", "jm.io", "jm.math",
+                               "jm.console", "jm.collections"})
+        if (standardModule(module))
+            addCompletionSymbol(completion, module, "가져올 수 있는 표준 모듈입니다.");
+    Program symbols;
+    Diagnostic symbolsDiagnostic;
+    if (parseEditorProgram(symbols, symbolsDiagnostic))
+        collectStatementCompletions(symbols.statements, completion);
+    std::sort(completion.words.begin(), completion.words.end());
+    completion.words.erase(std::unique(completion.words.begin(), completion.words.end()), completion.words.end());
     auto metadataRegistry = engineNativeFunctions();
+    if (metadataRegistry.hasModule("jm.game"))
+        addCompletionSymbol(completion, "jm.game", "현재 엔진 API가 제공하는 게임 모듈입니다.");
     auto metadataEntries = metadataRegistry.allMetadata();
-    for (const auto &entry : metadataEntries)
-        completion.words.push_back(entry.displayName);
+    for (const auto &entry : metadataEntries) {
+        addCompletionSymbol(completion, entry.displayName, ir::metadataSignature(entry) + "\n" +
+                                                               entry.documentation);
+        if (languageKoreanSyntax_)
+            addCompletionSymbol(completion, entry.koreanName,
+                                ir::metadataSignature(entry) + "\n" + entry.documentation);
+    }
+    std::sort(completion.words.begin(), completion.words.end());
+    completion.words.erase(std::unique(completion.words.begin(), completion.words.end()), completion.words.end());
+    if (!ImGui::BeginTable("SamatStudioSplit", 2,
+                           ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable |
+                               ImGuiTableFlags_SizingStretchProp))
+        return;
+    ImGui::TableSetupColumn("Code Editor", ImGuiTableColumnFlags_WidthStretch, 0.62F);
+    ImGui::TableSetupColumn("Run Output", ImGuiTableColumnFlags_WidthStretch, 0.38F);
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
     ImGuiInputTextFlags flags = ImGuiInputTextFlags_CallbackCompletion | ImGuiInputTextFlags_CallbackAlways;
-    ImGui::InputTextMultiline("##jm-language-core", &languageCodeBuffer_, ImVec2(-1.0F, editorHeight), flags,
-                              languageCompletionCallback, &completion);
-    ImGui::TextDisabled("입력 도우미 · Ctrl+Space 또는 Tab으로 자동완성");
-    if (!completion.matches.empty() && !completion.prefix.empty()) {
-        for (const std::string &suggestion : completion.matches) {
-            ImGui::SameLine();
-            if (ImGui::SmallButton(suggestion.c_str())) {
-                const std::size_t start = static_cast<std::size_t>(
-                    std::clamp(completion.wordStart, 0, static_cast<int>(languageCodeBuffer_.size())));
-                const std::size_t end =
-                    static_cast<std::size_t>(std::clamp(completion.cursor, static_cast<int>(start),
-                                                        static_cast<int>(languageCodeBuffer_.size())));
-                languageCodeBuffer_.replace(start, end - start, suggestion);
-            }
+    ImGui::TextUnformatted("소스 편집");
+    ImGui::TextDisabled("현재 문법: %s%s", languageKoreanSyntax_ ? "訓C正音" : "Samat",
+                        languageDirty_ ? " · 수정됨" : "");
+    ImGui::TextUnformatted("편집기");
+    ImGui::SameLine();
+    ImGui::TextDisabled("오류 줄 표시 · Ctrl+Space 후보 · Tab 공통 자동완성");
+    const bool editorChanged = ImGui::InputTextMultiline("##jm-language-core", &languageCodeBuffer_,
+                                                         ImVec2(-1.0F, editorHeight), flags,
+                                                         languageCompletionCallback, &completion);
+    if (editorChanged) {
+        languageDirty_ = true;
+        Program parsed;
+        Diagnostic diagnostic;
+        if (parseEditorProgram(parsed, diagnostic)) {
+            languageErrorLine_ = 0;
+            languageDiagnostic_.clear();
+        } else {
+            languageErrorLine_ = diagnostic.line;
+            languageDiagnostic_ = diagnostic.message;
+            languageStatus_ = languageBeginnerMode_ ? beginnerDiagnostic(diagnostic) : diagnostic.message;
         }
     }
+    const bool editorFocused = ImGui::IsItemActive();
+    if (editorFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Space))
+        ImGui::OpenPopup("Samat 자동완성");
+    if (!completion.matches.empty() && ImGui::BeginPopup("Samat 자동완성")) {
+        ImGui::TextUnformatted("현재 파일 이름 · 함수 매개변수 · 엔진 API");
+        const std::size_t limit = std::min<std::size_t>(completion.matches.size(), 40);
+        for (std::size_t index = 0; index < limit; ++index) {
+            const auto &suggestion = completion.matches[index];
+            ImGui::PushID(static_cast<int>(index));
+            const bool selected = ImGui::Selectable(suggestion.c_str(), index == 0);
+            if (ImGui::IsItemHovered())
+                if (auto detail = completion.descriptions.find(suggestion);
+                    detail != completion.descriptions.end() && !detail->second.empty())
+                    ImGui::SetTooltip("%s", detail->second.c_str());
+            if (selected) {
+                const std::size_t start = static_cast<std::size_t>(
+                    std::clamp(completion.wordStart, 0, static_cast<int>(languageCodeBuffer_.size())));
+                const std::size_t end = static_cast<std::size_t>(
+                    std::clamp(completion.wordEnd, static_cast<int>(start),
+                               static_cast<int>(languageCodeBuffer_.size())));
+                languageCodeBuffer_.replace(start, end - start, suggestion);
+                languageDirty_ = true;
+                ImGui::CloseCurrentPopup();
+            }
+            if (index == 0)
+                ImGui::SetItemDefaultFocus();
+            ImGui::PopID();
+        }
+        ImGui::EndPopup();
+    }
+    if (auto keyRange = studio::inputKeyStringAt(languageCodeBuffer_,
+                                                 static_cast<std::size_t>(completion.cursor));
+        keyRange && ImGui::SmallButton("키 선택")) {
+        languageKeyRange_ = *keyRange;
+        languageKeyRangeValid_ = true;
+        ImGui::OpenPopup("입력 키 선택");
+    }
+    if (ImGui::BeginPopup("입력 키 선택")) {
+        ImGui::InputText("검색", &languageKeySearch_);
+        struct KeyChoice {
+            std::string label;
+            std::string name;
+            std::string description;
+        };
+        static const std::vector<KeyChoice> keys = [] {
+            std::vector<KeyChoice> values{{"Space", "space", "스페이스 키"},
+                                          {"Enter", "return", "엔터 키"},
+                                          {"Escape", "escape", "취소 키"},
+                                          {"Tab", "tab", "탭 키"},
+                                          {"Backspace", "backspace", "지우기 키"},
+                                          {"Delete", "delete", "삭제 키"},
+                                          {"Left Arrow", "left", "왼쪽 방향키"},
+                                          {"Right Arrow", "right", "오른쪽 방향키"},
+                                          {"Up Arrow", "up", "위쪽 방향키"},
+                                          {"Down Arrow", "down", "아래쪽 방향키"},
+                                          {"Left Ctrl", "left_ctrl", "왼쪽 Ctrl 키"},
+                                          {"Right Ctrl", "right_ctrl", "오른쪽 Ctrl 키"},
+                                          {"Left Shift", "left_shift", "왼쪽 Shift 키"},
+                                          {"Right Shift", "right_shift", "오른쪽 Shift 키"}};
+            for (char value = 'a'; value <= 'z'; ++value)
+                values.push_back({std::string(1, static_cast<char>(std::toupper(
+                                      static_cast<unsigned char>(value)))),
+                                  std::string(1, value), "문자 키"});
+            for (char value = '0'; value <= '9'; ++value)
+                values.push_back({std::string(1, value), std::string(1, value), "숫자 키"});
+            return values;
+        }();
+        for (const auto &key : keys) {
+            if (!languageKeySearch_.empty() &&
+                key.label.find(languageKeySearch_) == std::string::npos &&
+                key.name.find(languageKeySearch_) == std::string::npos)
+                continue;
+            if (ImGui::Selectable(key.label.c_str())) {
+                if (languageKeyRangeValid_ && languageKeyRange_.end <= languageCodeBuffer_.size()) {
+                    languageCodeBuffer_.replace(languageKeyRange_.begin,
+                                                languageKeyRange_.end - languageKeyRange_.begin, key.name);
+                    languageDirty_ = true;
+                }
+                languageKeyRangeValid_ = false;
+                languageKeySearch_.clear();
+                ImGui::CloseCurrentPopup();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s · input.isHeld(\"%s\") 및 input.wasPressed(\"%s\")에서 사용",
+                                  key.description.c_str(), key.name.c_str(), key.name.c_str());
+        }
+        ImGui::EndPopup();
+    }
+    if (languageErrorLine_ > 0) {
+        ImGui::TextColored(ImVec4(1.0F, 0.35F, 0.30F, 1.0F), "문법 오류 · 줄 %zu", languageErrorLine_);
+        if (!languageDiagnostic_.empty())
+            ImGui::TextWrapped("%s", languageBeginnerMode_ ? beginnerDiagnostic(Diagnostic{
+                                                                  languageDiagnostic_, languageErrorLine_})
+                                                           .c_str()
+                                                         : languageDiagnostic_.c_str());
+    }
+    ImGui::TableSetColumnIndex(1);
+    if (ImGui::BeginTabBar("SamatStudioOutput")) {
+            if (ImGui::BeginTabItem("콘솔")) {
+                ImGui::BeginChild("SamatStudioConsole", ImVec2(-1.0F, editorHeight),
+                                  ImGuiChildFlags_Borders);
+                ImGui::TextUnformatted(languageOutput_.empty() ? "실행 결과가 여기에 표시됩니다."
+                                                               : languageOutput_.c_str());
+                ImGui::EndChild();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("진단")) {
+                if (languageStatus_.empty())
+                    ImGui::TextUnformatted("문법 검사나 실행을 시작해 보세요.");
+                else
+                    ImGui::TextWrapped("%s", languageStatus_.c_str());
+                if (languageErrorLine_ > 0) {
+                    ImGui::TextColored(ImVec4(1.0F, 0.35F, 0.30F, 1.0F), "문제 위치 · 줄 %zu",
+                                       languageErrorLine_);
+                    std::size_t lineStart = 0;
+                    for (std::size_t line = 1; line < languageErrorLine_ && lineStart < languageCodeBuffer_.size();
+                         ++line) {
+                        const auto newline = languageCodeBuffer_.find('\n', lineStart);
+                        if (newline == std::string::npos) {
+                            lineStart = languageCodeBuffer_.size();
+                            break;
+                        }
+                        lineStart = newline + 1;
+                    }
+                    if (lineStart < languageCodeBuffer_.size()) {
+                        auto lineEnd = languageCodeBuffer_.find('\n', lineStart);
+                        if (lineEnd == std::string::npos)
+                            lineEnd = languageCodeBuffer_.size();
+                        const std::string excerpt = languageCodeBuffer_.substr(lineStart, lineEnd - lineStart);
+                        ImGui::TextColored(ImVec4(1.0F, 0.45F, 0.40F, 1.0F), "> %s", excerpt.c_str());
+                    }
+                    if (!languageDiagnostic_.empty() && !languageBeginnerMode_)
+                        ImGui::TextWrapped("%s", languageDiagnostic_.c_str());
+                }
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("게임 미리보기")) {
+                ImGui::TextWrapped("게임 장면 스크립트는 상단의 코드 작업공간에서 게임 미리보기와 함께 실행할 수 있습니다. 독립 Samat 코드는 장면 권한 없이 실행됩니다.");
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+    }
+    ImGui::EndTable();
+    if (editorFocused && ImGui::IsKeyPressed(ImGuiKey_F1))
+        ImGui::OpenPopup("Samat 자동완성");
     if (ImGui::CollapsingHeader("값 편집")) {
         Program values;
         Diagnostic diagnostic;
@@ -1152,14 +1660,6 @@ void Application::drawLanguageCorePanel() {
             for (const auto &[name, value] : languageRuntime_->inspect())
                 ImGui::Text("%s = %s", name.c_str(), value.c_str());
     }
-    if (!languageStatus_.empty())
-        ImGui::TextWrapped("%s", languageStatus_.c_str());
-    if (!languageOutput_.empty()) {
-        ImGui::BeginChild("SamatOutput", ImVec2(-1.0F, resultHeight - 20.0F), ImGuiChildFlags_Borders);
-        ImGui::TextUnformatted(languageOutput_.c_str());
-        ImGui::EndChild();
-    }
-
     if (ImGui::CollapsingHeader("현재까지 사용할 수 있는 코드", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::BulletText(
             "언어 코어: 변수 변경, if/else, while/for, 함수·매개변수·반환·재귀, 산술·비교·논리식");

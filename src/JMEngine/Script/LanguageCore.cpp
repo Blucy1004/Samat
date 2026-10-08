@@ -2289,6 +2289,8 @@ class KoreanAstParser {
             else
                 raw.clear();
             if (!raw.empty()) {
+                if (raw.ends_with("을") || raw.ends_with("를"))
+                    raw.resize(raw.size() - 3);
                 auto call = std::make_shared<Expression>();
                 call->kind = Expression::Kind::Call;
                 auto callee = std::make_shared<Expression>();

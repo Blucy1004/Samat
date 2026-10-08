@@ -109,6 +109,23 @@ void runBackend(const std::string &source, jm::EngineScriptBackend backend) {
 int main() {
     try {
         const std::filesystem::path root = JM_SOURCE_DIR;
+        const std::string genericKeySource = R"ST(let pressed: Int = 0
+on key.escape.pressed:
+    pressed += 1
+on update:
+    if input.wasPressed("escape") and input.isHeld("escape"):
+        pressed += 1
+)ST";
+        jm::Scene keyScene;
+        jm::EngineEventRuntime keyRuntime(keyScene, {}, parse(genericKeySource));
+        keyRuntime.start();
+        jm::ScriptInput escapeInput;
+        escapeInput.keysPressed = {"escape"};
+        escapeInput.keysHeld = {"escape"};
+        keyRuntime.tick(escapeInput, 0.0);
+        require(number(keyRuntime.inspect(), "pressed") == 2.0,
+                "Named Escape key event/input did not match the smart key picker spelling.");
+
         const auto source = sourceFile(root / "examples/Samat/pong.st");
         const auto code = parse(source);
         auto registry = jm::engineNativeFunctions();

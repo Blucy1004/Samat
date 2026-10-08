@@ -3,10 +3,12 @@
 #include <SDL3/SDL.h>
 
 #include "JMEngine/Scene/Scene.hpp"
+#include "JMEngine/Core/SamatStudioSupport.hpp"
 #include "JMEngine/Script/EngineScriptAPI.hpp"
 #include "JMEngine/Script/Script.hpp"
 
 #include <filesystem>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -17,7 +19,7 @@ namespace jm {
 class Renderer;
 
 struct ApplicationConfig {
-    std::string title{"JM Engine"};
+    std::string title{"Samat Studio"};
     int width{1280};
     int height{720};
 };
@@ -67,6 +69,15 @@ class Application {
     std::string scriptStatus_;
     std::string languageStatus_;
     std::string languageOutput_;
+    std::string languageFilePath_;
+    std::string languagePathInput_;
+    std::string languagePendingFilePath_;
+    std::string languageKeySearch_;
+    std::string languageDiagnostic_;
+    studio::TextRange languageKeyRange_{};
+    studio::InterpreterRun languageRun_;
+    std::uint64_t languageLastRunGeneration_{};
+    std::size_t languageErrorLine_{};
     ScriptProgram compiledScript_;
     std::optional<Scene> playSnapshot_;
     float viewportX_{0.0F};
@@ -94,8 +105,12 @@ class Application {
     bool koreanEditMode_{false};
     bool languageCompiled_{false};
     bool languageKoreanSyntax_{false};
+    bool languageBeginnerMode_{true};
+    bool languageDirty_{false};
+    bool languageKeyRangeValid_{false};
     bool languagePlayEnabled_{false};
     int languagePlayBackend_{};
+    int languagePendingDocumentAction_{};
     std::unique_ptr<EngineEventRuntime> languageRuntime_;
     bool spacePressedThisFrame_{false};
     std::unordered_set<std::string> keysPressedThisFrame_;

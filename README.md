@@ -12,6 +12,10 @@ Samat reads `.st` files directly. Try the interactive calculator with `build/Sam
 
 **Samat (`.st`) describes behavior. Haerye (`.hy`) describes scenes and appearance.** Haerye v0.1 can load declarative rectangles and circles into the existing JME Scene; see [docs/Haerye-v0.1.md](docs/Haerye-v0.1.md) and the [Pong pair](examples/Pong/).
 
+## Samat Studio — v1.0 work in progress
+
+The **Samat Studio** tab adds standalone `.st` editing, open/save by path, Code/訓C正音 conversion, metadata-assisted completion, a key picker for `input.isHeld` / `input.wasPressed`, interpreter execution with Stop, and console/diagnostic panes. The existing game editor and Pong Play path remain separate. See [the implementation status and limits](docs/SamatStudio-v1.0.md); the current work does **not** meet the full v1.0 release criteria yet.
+
 ## Engine editor vertical slice
 
 The sandbox opens a resizable editor with **Scene**, **Code**, and **Game Preview** tabs. The starter scene contains a controllable 2D Player and a static floor, alongside a separate 3D cube scene view. Press Play and use Left/Right to move and Space to jump. A fixed-step prototype physics pass handles gravity and platform collisions. Stop restores the scene to its pre-play state. The editor can create, open, and save projects as readable `project.jm`, `scenes/main.scene`, and `scripts/main.samat.json` files. The Code tab has an editable Samat surface with numeric `let`/`const` declarations, parameterized `fn` functions, arithmetic expressions for numeric action values, event handlers, and a small set of object actions. Function calls and parameters lower into the same event/action AST as 訓機正音, and both surfaces can be parsed back without changing their meaning. Scene objects have visibility and five draw layers; 2D sprites render from lower layer to higher layer. Korean UI uses the installed Windows Malgun font when available. 3D cubes retain depth testing and simple directional lighting.
@@ -24,7 +28,7 @@ The sandbox opens a resizable editor with **Scene**, **Code**, and **Game Previe
 - `F5`: Play; `Shift+F5`: Stop; `Delete`: remove the selected object
 - `Ctrl+S`: save the current project
 - In Play mode, hold `Left/Right Arrow` to move and press `Space` to jump
-- `Esc`: close
+- `Esc`: close outside Play; during Play it can be received as a script key
 
 The toolbar switches dimensions and starts or stops Play. The hierarchy only shows objects for the selected dimension. Use its create button to add a 2D object or 3D cube, then edit its layer and properties in the Inspector.
 
@@ -35,14 +39,16 @@ The renderer loads its small set of OpenGL functions through SDL after the conte
 Requirements: CMake 3.24+, a C/C++20 compiler, Git, and an internet connection for the first dependency fetch.
 
 ```powershell
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build --config Debug
-./build/Debug/jmengine_sandbox.exe
+cmake -S . -B build -A x64 -DJMENGINE_ENABLE_LLVM=OFF
+cmake --build build --config Release --parallel 2
+ctest --test-dir build -C Release --output-on-failure
+./build/Release/SamatStudio.exe
+cmake --build build --target package --config Release
 ```
 
-On generators that place executables directly in `build`, run `./build/jmengine_sandbox.exe`. CMake fetches SDL3 3.2.10, Dear ImGui 1.92.9b, and nlohmann/json 3.12.0. OpenGL is provided by the platform. Current physics is a deliberately small built-in platformer solver; Box2D, audio services, textures, tilemaps, and animation are planned additions.
+The Windows command targets Visual Studio 2022 x64. The generated portable ZIP includes `SamatStudio.exe`, the compiler CLI, and Studio examples. `jmengine_sandbox.exe` remains as a compatibility copy next to the Studio executable. CMake fetches SDL3 3.2.10, Dear ImGui 1.92.9b, and nlohmann/json 3.12.0; OpenGL is provided by the platform. The [Windows CI workflow](.github/workflows/samat-studio-windows.yml) builds, tests, and packages the x64 app. This Linux environment has not run that workflow or a Windows build.
 
-Run the automated smoke simulation with `ctest --test-dir build -C Debug --output-on-failure`. It checks viewport scaling, Hangul particles, Korean/Code AST round-trips, movement, floor collision, jumping, and project save/load.
+Run the automated regression suite with `ctest --test-dir build -C Release --output-on-failure`. It includes engine smoke, Hangul and Samat/Korean AST round-trips, sample execution, file helper, key replacement, and interpreter cancellation checks, plus compiler/backend/runtime regressions. Inside the Studio tab, use its Save button for the current `.st` document; `Ctrl+S` remains project save in the game editor.
 
 ## Structure and growth path
 

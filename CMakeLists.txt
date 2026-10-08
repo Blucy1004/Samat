@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.24)
 project(JMEngine VERSION 0.8.0 LANGUAGES C CXX)
 
+if(MSVC)
+    # Ship the Studio with the static MSVC runtime so the portable ZIP does not
+    # depend on a separately installed Visual C++ redistributable.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)
+endif()
+
 option(JMENGINE_BUILD_ENGINE "Build the SDL/OpenGL engine and editor" ON)
 option(JMENGINE_BUILD_SANDBOX "Build the JM Engine sandbox application" ON)
 option(JMENGINE_ENABLE_LLVM "Enable optional LLVM JIT and AOT backend" ON)
@@ -17,6 +23,7 @@ target_compile_features(Samat_runtime PUBLIC cxx_std_20)
 
 add_library(Samat_core
     src/JMEngine/Script/LanguageCore.cpp
+    src/JMEngine/Core/SamatStudioSupport.cpp
     src/JMEngine/Script/ModuleLoader.cpp
     src/JMEngine/Script/TypeChecker.cpp
     src/JMEngine/Script/StandardLibrary.cpp
@@ -145,6 +152,11 @@ if(JMENGINE_BUILD_ENGINE)
     if(JMENGINE_BUILD_SANDBOX)
         add_executable(jmengine_sandbox src/Sandbox/Main.cpp)
         target_link_libraries(jmengine_sandbox PRIVATE JMEngine::JMEngine)
+        set_target_properties(jmengine_sandbox PROPERTIES OUTPUT_NAME SamatStudio)
+        add_custom_command(TARGET jmengine_sandbox POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:jmengine_sandbox>"
+                "$<TARGET_FILE_DIR:jmengine_sandbox>/jmengine_sandbox${CMAKE_EXECUTABLE_SUFFIX}")
         if(MSVC)
             target_compile_options(jmengine_sandbox PRIVATE /EHsc /utf-8)
         endif()
@@ -157,6 +169,21 @@ if(JMENGINE_BUILD_ENGINE)
         endif()
         add_test(NAME jmengine_smoke COMMAND jmengine_smoke)
     endif()
+endif()
+
+if(JMENGINE_BUILD_ENGINE AND JMENGINE_BUILD_SANDBOX)
+    install(TARGETS jmengine_sandbox RUNTIME DESTINATION .)
+    install(DIRECTORY examples/Samat/v1.0 DESTINATION examples/Samat)
+    install(FILES examples/Samat/pong.st DESTINATION examples/Samat)
+    set(CPACK_PACKAGE_NAME "SamatStudio")
+    set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+    if(WIN32)
+        set(CPACK_PACKAGE_FILE_NAME "SamatStudio-${PROJECT_VERSION}-Windows-x64")
+    else()
+        set(CPACK_PACKAGE_FILE_NAME "SamatStudio-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+    endif()
+    set(CPACK_GENERATOR "ZIP")
+    include(CPack)
 endif()
 
 if(BUILD_TESTING)
@@ -194,6 +221,7 @@ if(BUILD_TESTING)
         target_link_libraries(Samat_compiler_tests PRIVATE Samat::Core)
         target_compile_definitions(Samat_compiler_tests PRIVATE JMENGINE_HAS_ENGINE=0)
     endif()
+    target_compile_definitions(Samat_compiler_tests PRIVATE JM_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     if(MSVC)
         target_compile_options(Samat_compiler_tests PRIVATE /EHsc /utf-8)
     endif()
