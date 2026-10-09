@@ -24,7 +24,7 @@ const std::unordered_set<std::string_view> &samatKeywords() {
         "let", "const", "fn", "if", "else", "while", "for", "in", "return", "break", "continue",
         "true", "false", "null", "and", "or", "not", "import", "on", "enum", "struct",
         "함수", "변수", "상수", "라면", "아니라면", "동안", "반환한다", "반복하며", "반복을",
-        "멈춘다", "다음", "진행한다", "가져온다", "실행한다", "출력한다", "참", "거짓", "시작할", "때"};
+        "멈춘다", "다음", "진행한다", "가져온다", "모듈", "실행한다", "출력한다", "참", "거짓", "시작할", "때"};
     return values;
 }
 
@@ -368,6 +368,8 @@ bool InterpreterRun::start(jm::script::Program program, jm::script::RunOptions o
             state->snapshot.output = std::move(result.output);
             state->snapshot.returnValue = std::move(result.returnValue);
             state->snapshot.instructionsExecuted = result.instructionsExecuted;
+            if (result.globals)
+                state->snapshot.variables = result.globals->inspect();
         } catch (const std::exception &exception) {
             std::lock_guard lock(state->mutex);
             if (!token.stop_requested())
@@ -442,6 +444,7 @@ RunSnapshot InterpreterRun::snapshot(bool includeOutput) const {
     if (includeOutput)
         result.output = state->snapshot.output;
     result.returnValue = state->snapshot.returnValue;
+    result.variables = state->snapshot.variables;
     result.error = state->snapshot.error;
     return result;
 }

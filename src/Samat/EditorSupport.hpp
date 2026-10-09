@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <cstdint>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -45,6 +46,7 @@ struct RunSnapshot {
     std::size_t instructionsExecuted{};
     std::vector<std::string> output;
     jm::script::Value returnValue;
+    std::map<std::string, std::string> variables;
     std::string error;
 };
 

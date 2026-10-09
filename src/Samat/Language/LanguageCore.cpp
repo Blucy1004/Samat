@@ -2229,9 +2229,12 @@ class KoreanAstParser {
                 result.push_back(statement);
                 continue;
             }
-            if (text.rfind("가져온다 ", 0) == 0) {
+            static const std::regex koreanModule(R"(^모듈\s+(.+?)(?:을|를)\s+가져온다\.?$)");
+            if (std::regex_match(text, match, koreanModule) || text.rfind("가져온다 ", 0) == 0) {
                 statement.kind = Statement::Kind::Import;
-                statement.name = trimLanguageText(text.substr(std::string("가져온다 ").size()));
+                statement.name = std::regex_match(text, match, koreanModule)
+                                     ? trimLanguageText(match[1].str())
+                                     : trimLanguageText(text.substr(std::string("가져온다 ").size()));
                 if (statement.name.starts_with("\"")) {
                     auto value = expr(statement.name);
                     if (value->kind != Expression::Kind::Literal || value->literal.type() != Type::String)
@@ -2278,6 +2281,13 @@ class KoreanAstParser {
                 statement.operation = "=";
                 statement.target = expr(match[1].str());
                 statement.expression = expr(match[2].str());
+                result.push_back(statement);
+                continue;
+            }
+            static const std::regex koreanCall(R"(^함수\s+(.+?)(?:을|를)\s+실행한다\.?$)");
+            if (std::regex_match(text, match, koreanCall)) {
+                statement.kind = Statement::Kind::Expression;
+                statement.expression = expr(match[1].str());
                 result.push_back(statement);
                 continue;
             }
@@ -2782,7 +2792,11 @@ class Interpreter {
             return {};
         }
         case Statement::Kind::Variable: {
-            Value value = statement.expression ? eval(statement.expression, env) : Value{};
+            const auto initial = env == globals_ ? options_.initialValues.find(statement.name)
+                                                 : options_.initialValues.end();
+            Value value = initial != options_.initialValues.end()
+                              ? initial->second
+                              : statement.expression ? eval(statement.expression, env) : Value{};
             if (!statement.expression)
                 switch (statement.declaredType) {
                 case Type::Int:
@@ -2828,6 +2842,8 @@ class Interpreter {
                 typeList(value, statement.elementType);
             if (statement.declaredType == Type::Map)
                 typeMap(value, statement.elementType);
+            if (initial != options_.initialValues.end())
+                env->eraseLocal(statement.name);
             env->declare(statement.name, std::move(value), statement.constant);
             return {};
         }

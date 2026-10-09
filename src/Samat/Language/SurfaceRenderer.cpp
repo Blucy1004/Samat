@@ -176,7 +176,12 @@ void render(std::ostringstream &out, const StatementList &list, bool korean, std
                     << '\n';
             break;
         case Statement::Kind::Expression:
-            out << (korean ? "실행한다 " : "") << expression(item.expression) << '\n';
+            if (korean && item.expression && item.expression->kind == Expression::Kind::Call)
+                out << "함수 " << expression(item.expression) << "를 실행한다.\n";
+            else if (korean)
+                out << "실행한다 " << expression(item.expression) << '\n';
+            else
+                out << expression(item.expression) << '\n';
             break;
         case Statement::Kind::Enum:
         case Statement::Kind::Struct:
@@ -270,8 +275,10 @@ void render(std::ostringstream &out, const StatementList &list, bool korean, std
             render(out, item.body, korean, depth + 1);
             break;
         case Statement::Kind::Import:
-            out << (korean ? "가져온다 " : "import ") << (item.fileImport ? quote(item.name) : item.name)
-                << '\n';
+            if (korean)
+                out << "모듈 " << (item.fileImport ? quote(item.name) : item.name) << "을 가져온다.\n";
+            else
+                out << "import " << (item.fileImport ? quote(item.name) : item.name) << '\n';
             break;
         }
     }
