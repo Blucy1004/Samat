@@ -27,10 +27,10 @@ jobs:
           $expanded = Join-Path $env:RUNNER_TEMP 'SamatStudio-package-check'
           Expand-Archive -Path $archive.FullName -DestinationPath $expanded -Force
           $root = Get-ChildItem $expanded -Directory | Select-Object -First 1
-          foreach ($required in @('SamatStudio.exe', 'jmengine_sandbox.exe', 'bin/SamatCompiler.exe', 'examples/Samat/v1.0/hello.st')) {
+          foreach ($required in @('SamatStudio.exe', 'jmengine_sandbox.exe', 'bin/Samat.exe', 'examples/Samat/v1.0/hello.st')) {
             if (-not (Test-Path (Join-Path $root.FullName $required))) { throw "ZIP is missing $required" }
           }
-          & (Join-Path $root.FullName 'bin/SamatCompiler.exe') --version
+          & (Join-Path $root.FullName 'bin/Samat.exe') --version
           if ($LASTEXITCODE -ne 0) { throw 'Packaged compiler CLI did not start successfully.' }
       - uses: actions/upload-artifact@v4
         with:

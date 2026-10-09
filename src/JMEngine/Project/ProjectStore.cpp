@@ -356,7 +356,9 @@ ProjectDocument ProjectStore::load(const std::filesystem::path& root) {
     }
     result.scene.replaceObjects(std::move(objects));
 
-    const std::filesystem::path scriptPath = root / "scripts" / "main.samat.json";
+    std::filesystem::path scriptPath = root / "scripts" / "main.samat.json";
+    if (!std::filesystem::exists(scriptPath))
+        scriptPath = root / "scripts" / "main.samat.json";
     if (std::filesystem::exists(scriptPath)) {
         const Json scriptDocument = readJson(scriptPath);
         const int scriptVersion = scriptDocument.at("formatVersion").get<int>();

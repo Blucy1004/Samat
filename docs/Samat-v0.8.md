@@ -14,7 +14,7 @@ also available for scripted startup:
 build/jmengine_sandbox --smoke-language examples/Samat/pong.st
 ```
 
-The standalone `SamatCompiler` runs `.st` files that use the standalone
+The standalone `Samat` runs `.st` files that use the standalone
 language/console host; it does not attach scene and input APIs.
 
 The Pong example spawns three Sprite2D objects, moves the paddles with W/S and

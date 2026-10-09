@@ -49,9 +49,9 @@ entry:
 ## Run the prototype compiler
 
 ```powershell
-Samat.exe --ir examples/Samat/native-factorial.st
-Samat.exe --native main examples/Samat/native-factorial.st
-Samat.exe --native factorial examples/Samat/native-factorial.st 10
+Samat.exe --ir examples/Samat/archive/native-factorial.st
+Samat.exe --native main examples/Samat/archive/native-factorial.st
+Samat.exe --native factorial examples/Samat/archive/native-factorial.st 10
 ```
 
 The native command reports the target triple, result, and emitted function machine-code bytes. It uses the same C++ interpreter as the reference path; plain `Samat.exe <file>` continues to run interpreted scripts.

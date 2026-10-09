@@ -155,6 +155,19 @@ std::optional<SyntaxToken> syntaxTokenAt(std::string_view source, std::size_t of
         return SyntaxToken{{offset, end}, kind};
     }
     if (first >= '0' && first <= '9') {
+        if (source.substr(offset, 2) == "0x" || source.substr(offset, 2) == "0X") {
+            end = offset + 2;
+            while (end < source.size() &&
+                   (std::isxdigit(static_cast<unsigned char>(source[end])) || source[end] == '_'))
+                ++end;
+            return SyntaxToken{{offset, end}, SyntaxKind::Number};
+        }
+        if (source.substr(offset, 2) == "0b" || source.substr(offset, 2) == "0B") {
+            end = offset + 2;
+            while (end < source.size() && (source[end] == '0' || source[end] == '1' || source[end] == '_'))
+                ++end;
+            return SyntaxToken{{offset, end}, SyntaxKind::Number};
+        }
         while (end < source.size()) {
             const unsigned char ch = static_cast<unsigned char>(source[end]);
             if ((ch >= '0' && ch <= '9') || ch == '_')
@@ -255,6 +268,30 @@ std::optional<std::filesystem::path> chooseOpenScriptFile(const std::filesystem:
     dialog.lpstrFile = selected.data();
     dialog.nMaxFile = static_cast<DWORD>(selected.size());
     dialog.lpstrDefExt = L"st";
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_HIDEREADONLY;
+    if (GetOpenFileNameW(&dialog))
+        return std::filesystem::path(selected.data());
+#else
+    (void)initialPath;
+#endif
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> chooseOpenHaeryeFile(const std::filesystem::path &initialPath) {
+#ifdef _WIN32
+    std::array<wchar_t, 32768> selected{};
+    if (!initialPath.empty()) {
+        const auto encoded = initialPath.native();
+        const auto count = std::min(encoded.size(), selected.size() - 1);
+        std::copy_n(encoded.data(), count, selected.data());
+    }
+    static constexpr wchar_t filter[] = L"Haerye scene (*.hy)\0*.hy\0All files (*.*)\0*.*\0\0";
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.lpstrFilter = filter;
+    dialog.lpstrFile = selected.data();
+    dialog.nMaxFile = static_cast<DWORD>(selected.size());
+    dialog.lpstrDefExt = L"hy";
     dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_HIDEREADONLY;
     if (GetOpenFileNameW(&dialog))
         return std::filesystem::path(selected.data());

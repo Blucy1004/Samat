@@ -240,7 +240,7 @@ void studioSupport() {
     require(jm::studio::saveScriptFile(path, source, error), "Studio save failed: " + error);
     require(jm::studio::loadScriptFile(path, loaded, error) && loaded == source,
             "Studio open did not preserve the saved source: " + error);
-    require(!jm::studio::saveScriptFile(directory / "wrong.stcript", source, error),
+    require(!jm::studio::saveScriptFile(directory / "wrong.txt", source, error),
             "Studio allowed saving outside the .st source format.");
     std::filesystem::remove_all(directory);
 

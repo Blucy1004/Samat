@@ -968,13 +968,13 @@ void LLVMBackend::build(const Module &input, const std::string &output, const st
     std::filesystem::path archive;
     if (runtime) {
 #if defined(__linux__)
-        archive = std::filesystem::read_symlink("/proc/self/exe").parent_path() / "libSamat_runtime.a";
+        archive = std::filesystem::read_symlink("/proc/self/exe").parent_path() / "libsamat_runtime.a";
 #else
         throw std::runtime_error("JM6003: Runtime AOT archive discovery currently requires Linux.");
 #endif
         if (!std::filesystem::exists(archive))
             throw std::runtime_error(
-                "JM6003: Place libSamat_runtime.a beside the compiler for String/List AOT.");
+                "JM6003: Place libsamat_runtime.a beside the compiler for String/List AOT.");
     }
     auto object = output + ".jm.o";
     if (std::filesystem::exists(object))

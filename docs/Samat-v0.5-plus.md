@@ -16,7 +16,7 @@ LLVM now executes String/List operations through a real C runtime ABI, including
 
 ## 4. Files
 
-Core changes: `LanguageCore.*`, `TypeChecker.cpp`, `SurfaceRenderer.cpp`, `JMIR.*`, `IRVerifier.cpp`, `LLVMBackend.cpp`, `X64Backend.cpp`, `StandardLibrary.*`. New runtime and modules: `RuntimeABI.h/.cpp`, `ModuleLoader.hpp/.cpp`. Host integration: `EngineScriptAPI.*`, `Application.*`, CLI and Sandbox entry points. Build/tests: `CMakeLists.txt`, `ExtendedRegression.cpp`, existing compiler/memory tests and benchmark. Samples: `examples/Samat/v05plus`.
+Core changes: `LanguageCore.*`, `TypeChecker.cpp`, `SurfaceRenderer.cpp`, `JMIR.*`, `IRVerifier.cpp`, `LLVMBackend.cpp`, `X64Backend.cpp`, `StandardLibrary.*`. New runtime and modules: `RuntimeABI.h/.cpp`, `ModuleLoader.hpp/.cpp`. Host integration: `EngineScriptAPI.*`, `Application.*`, CLI and Sandbox entry points. Build/tests: `CMakeLists.txt`, `ExtendedRegression.cpp`, existing compiler/memory tests and benchmark. Samples: `examples/Samat/archive/v0.5-plus`.
 
 ## 5. AST
 
@@ -48,7 +48,7 @@ Supports native String/List handles, conversions, runtime errors, globals for St
 
 ## 12. LLVM AOT
 
-Linux CLI links the installed sibling `libSamat_runtime.a`, followed by C++ and math libraries. Actual String/List executables and failing bounds executables were tested. Scalar Windows PE support is retained; Windows managed-runtime linking needs a Windows runtime archive and is explicitly unsupported. Managed-runtime COFF object emission alone does not imply a working executable.
+Linux CLI links the installed sibling `libsamat_runtime.a`, followed by C++ and math libraries. Actual String/List executables and failing bounds executables were tested. Scalar Windows PE support is retained; Windows managed-runtime linking needs a Windows runtime archive and is explicitly unsupported. Managed-runtime COFF object emission alone does not imply a working executable.
 
 ## 13. Runtime ABI
 
@@ -152,10 +152,10 @@ The cloud setup script supplies CMake/Ninja, LLVM 19, graphics dependencies and 
 source /workspace/.tools/env.sh
 cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
-./build/SamatCompiler run examples/Samat/v05plus/native-collections.st
+./build/Samat run examples/Samat/archive/v0.5-plus/native-collections.st
 ```
 
-Independent core builds use `-DJMENGINE_BUILD_ENGINE=OFF`; optional LLVM uses `-DJMENGINE_ENABLE_LLVM=OFF`; sanitizer builds additionally use `-DSamat_ENABLE_SANITIZERS=ON`. Consult CMake options for exact cache configuration. Install component `Samat` installs CLI and sibling runtime archive for AOT.
+Independent core builds use `-DJMENGINE_BUILD_ENGINE=OFF`; optional LLVM uses `-DJMENGINE_ENABLE_LLVM=OFF`; sanitizer builds additionally use `-DSAMAT_ENABLE_SANITIZERS=ON`. Consult CMake options for exact cache configuration. Install component `Samat` installs CLI and sibling runtime archive for AOT.
 
 ## Final validation
 

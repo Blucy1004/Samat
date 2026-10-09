@@ -11,6 +11,17 @@
 #include <vector>
 
 namespace {
+std::filesystem::path normalizedPath(const std::filesystem::path &path) {
+    std::error_code error;
+    auto canonical = std::filesystem::weakly_canonical(path, error);
+    if (!error)
+        return canonical;
+    auto absolute = std::filesystem::absolute(path, error);
+    if (error)
+        throw std::filesystem::filesystem_error("Could not resolve script path", path, error);
+    return absolute.lexically_normal();
+}
+
 jm::script::HostFunction ioHost() {
     using namespace jm::script;
     return [](const std::string &name, const std::vector<Value> &args,
@@ -91,17 +102,17 @@ int repl() {
     return 0;
 }
 void help() {
-    std::cout << "Samat / Samat / 訓C正音 v0.8\n"
-                 "  SamatCompiler [run] file.st [--entry main]\n"
-                 "  SamatCompiler check file.st\n"
-                 "  SamatCompiler --ast|--ir|--code|--korean file.st\n"
-                 "  SamatCompiler --native function file.st [i64 args...]\n"
-                 "  SamatCompiler --llvm-jit function file.st [scalar args...] [-O]\n"
-                 "  SamatCompiler --emit-llvm file.st [-O] [--target triple]\n"
-                 "  SamatCompiler --emit-obj output.o file.st [--target triple]\n"
-                 "  SamatCompiler build file.st -o program [--target triple] [--linker path]\n"
-                 "  SamatCompiler --build output file.st\n"
-                 "  SamatCompiler format file.st | --repl\n  SamatCompiler --help|--version\n";
+    std::cout << "Samat 1.0.0 — Code Syntax / 訓C正音\n"
+                 "  Samat [run] file.st [--entry main]\n"
+                 "  Samat check file.st\n"
+                 "  Samat --ast|--ir|--code|--korean file.st\n"
+                 "  Samat --native function file.st [i64 args...]\n"
+                 "  Samat --llvm-jit function file.st [scalar args...] [-O]\n"
+                 "  Samat --emit-llvm file.st [-O] [--target triple]\n"
+                 "  Samat --emit-obj output.o file.st [--target triple]\n"
+                 "  Samat build file.st -o program [--target triple] [--linker path]\n"
+                 "  Samat --build output file.st\n"
+                 "  Samat format file.st | --repl\n  Samat --help|--version\n";
 }
 void showDiagnostic(const jm::script::Diagnostic &diagnostic) {
     std::cerr << diagnostic.code;
@@ -160,7 +171,7 @@ int main(int argc, char **argv) {
                 return 0;
             }
             if (arg == "--version") {
-                std::cout << "Samat / Samat / 訓C正音 0.8.0 (LLVM "
+                std::cout << "Samat 1.0.0 (LLVM "
                           << (ir::LLVMBackend::available() ? "enabled" : "unavailable") << ")\n";
                 return 0;
             }
@@ -217,8 +228,7 @@ int main(int argc, char **argv) {
         if (mode != "format" && mode != "--code" && mode != "--korean") {
             auto resolver = [](std::string_view importer,
                                std::string_view request) -> std::optional<ModuleSource> {
-                auto path = std::filesystem::weakly_canonical(std::filesystem::path(importer).parent_path() /
-                                                              request);
+                auto path = normalizedPath(std::filesystem::path(importer).parent_path() / request);
                 std::ifstream input(path, std::ios::binary);
                 if (!input)
                     return std::nullopt;
@@ -226,7 +236,7 @@ int main(int argc, char **argv) {
             };
             Diagnostic diagnostic;
             Program resolved;
-            if (!loadModules({std::filesystem::weakly_canonical(file).string(), source}, resolver, resolved,
+            if (!loadModules({normalizedPath(file).string(), source}, resolver, resolved,
                              diagnostic)) {
                 showDiagnostic(diagnostic);
                 return 1;

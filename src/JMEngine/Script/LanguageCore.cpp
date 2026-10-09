@@ -6,6 +6,7 @@
 #include <bit>
 #include <charconv>
 #include <cmath>
+#include <cctype>
 #include <cstdlib>
 #include <deque>
 #include <iomanip>
@@ -75,6 +76,34 @@ struct Token {
     std::size_t line{1};
 };
 
+bool digitForBase(char value, int base) {
+    if (value >= '0' && value <= '9')
+        return value - '0' < base;
+    if (base == 16 && value >= 'a' && value <= 'f')
+        return true;
+    return base == 16 && value >= 'A' && value <= 'F';
+}
+
+std::string withoutDigitSeparators(std::string_view value, int base = 10) {
+    std::string result;
+    result.reserve(value.size());
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        if (value[index] != '_') {
+            const bool decimalSyntax = base == 10 &&
+                                       (value[index] == '.' || value[index] == 'e' || value[index] == 'E' ||
+                                        value[index] == '+' || value[index] == '-');
+            if (!digitForBase(value[index], base) && !decimalSyntax)
+                throw std::runtime_error("Invalid digit in numeric literal.");
+            result.push_back(value[index]);
+            continue;
+        }
+        if (index == 0 || index + 1 == value.size() || !digitForBase(value[index - 1], base) ||
+            !digitForBase(value[index + 1], base))
+            throw std::runtime_error("Numeric separators must appear between digits.");
+    }
+    return result;
+}
+
 bool isIdentifierStart(unsigned char ch) {
     return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_';
 }
@@ -141,13 +170,30 @@ std::vector<Token> lex(const std::string &source) {
                 }
                 if ((ch >= '0' && ch <= '9') || (ch == '.' && position + 1 < line.size() &&
                                                  line[position + 1] >= '0' && line[position + 1] <= '9')) {
+                    if (ch == '0' && position + 1 < line.size() &&
+                        (line[position + 1] == 'x' || line[position + 1] == 'X' ||
+                         line[position + 1] == 'b' || line[position + 1] == 'B')) {
+                        const int base = line[position + 1] == 'x' || line[position + 1] == 'X' ? 16 : 2;
+                        position += 2;
+                        while (position < line.size() &&
+                               (std::isalnum(static_cast<unsigned char>(line[position])) || line[position] == '_'))
+                            ++position;
+                        const std::string digits = withoutDigitSeparators(
+                            std::string_view(line).substr(start + 2, position - start - 2), base);
+                        if (digits.empty())
+                            throw std::runtime_error("Base-prefixed integer needs at least one digit.");
+                        tokens.push_back({Token::Kind::Number, line.substr(start, position - start), 0.0,
+                                          lineNumber});
+                        continue;
+                    }
                     if (!tokens.empty() && tokens.back().kind == Token::Kind::Dot) {
                         while (position < line.size() &&
-                               std::isdigit(static_cast<unsigned char>(line[position])))
+                               (std::isdigit(static_cast<unsigned char>(line[position])) || line[position] == '_'))
                             ++position;
-                        auto text = line.substr(start, position - start);
-                        tokens.push_back(
-                            {Token::Kind::Number, text, std::strtod(text.c_str(), nullptr), lineNumber});
+                        const auto text = line.substr(start, position - start);
+                        const auto normalized = withoutDigitSeparators(text);
+                        tokens.push_back({Token::Kind::Number, text, std::strtod(normalized.c_str(), nullptr),
+                                          lineNumber});
                         continue;
                     }
                     const std::size_t range = line.find("..", position);
@@ -155,20 +201,48 @@ std::vector<Token> lex(const std::string &source) {
                         line.substr(position, range - position).find_first_of(" \t+-*/%()[],") ==
                             std::string::npos) {
                         const std::string integerPart = line.substr(position, range - position);
+                        const std::string normalized = withoutDigitSeparators(integerPart);
                         char *rangeEnd = nullptr;
-                        const double rangeValue = std::strtod(integerPart.c_str(), &rangeEnd);
-                        if (rangeEnd == integerPart.c_str() + integerPart.size() &&
+                        const double rangeValue = std::strtod(normalized.c_str(), &rangeEnd);
+                        if (rangeEnd == normalized.c_str() + normalized.size() &&
                             std::isfinite(rangeValue)) {
                             tokens.push_back({Token::Kind::Number, integerPart, rangeValue, lineNumber});
                             position = range;
                             continue;
                         }
                     }
+                    std::string normalized;
+                    bool decimalPoint = false;
+                    while (position < line.size()) {
+                        const char current = line[position];
+                        if (std::isdigit(static_cast<unsigned char>(current))) {
+                            normalized.push_back(current);
+                            ++position;
+                        } else if (current == '_') {
+                            if (normalized.empty() || !std::isdigit(static_cast<unsigned char>(normalized.back())) ||
+                                position + 1 >= line.size() ||
+                                !std::isdigit(static_cast<unsigned char>(line[position + 1])))
+                                throw std::runtime_error("Numeric separators must appear between digits.");
+                            ++position;
+                        } else if (current == '.' && !decimalPoint &&
+                                   !(position + 1 < line.size() && line[position + 1] == '.')) {
+                            decimalPoint = true;
+                            normalized.push_back(current);
+                            ++position;
+                        } else if ((current == 'e' || current == 'E') &&
+                                   normalized.find_first_of("eE") == std::string::npos) {
+                            normalized.push_back(current);
+                            ++position;
+                            if (position < line.size() && (line[position] == '+' || line[position] == '-'))
+                                normalized.push_back(line[position++]);
+                        } else {
+                            break;
+                        }
+                    }
                     char *end = nullptr;
-                    const double number = std::strtod(line.c_str() + position, &end);
-                    if (end == line.c_str() + position || !std::isfinite(number))
+                    const double number = std::strtod(normalized.c_str(), &end);
+                    if (normalized.empty() || end != normalized.c_str() + normalized.size() || !std::isfinite(number))
                         throw std::runtime_error("Invalid number literal.");
-                    position = static_cast<std::size_t>(end - line.c_str());
                     tokens.push_back(
                         {Token::Kind::Number, line.substr(start, position - start), number, lineNumber});
                     continue;
@@ -528,15 +602,26 @@ class ExpressionParser {
         if (take(Token::Kind::Number)) {
             auto value = node(Expression::Kind::Literal);
             const auto &token = tokens_[position_ - 1];
-            if (token.text.find_first_of(".eE") == std::string::npos) {
+            const bool hex = token.text.starts_with("0x") || token.text.starts_with("0X");
+            const bool binary = token.text.starts_with("0b") || token.text.starts_with("0B");
+            if (hex || binary) {
+                const int base = hex ? 16 : 2;
+                const std::string digits = withoutDigitSeparators(std::string_view(token.text).substr(2), base);
                 std::int64_t integer{};
-                auto parsed =
-                    std::from_chars(token.text.data(), token.text.data() + token.text.size(), integer);
-                if (parsed.ec != std::errc{} || parsed.ptr != token.text.data() + token.text.size())
+                auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), integer, base);
+                if (parsed.ec != std::errc{} || parsed.ptr != digits.data() + digits.size())
                     throw std::runtime_error("Integer literal is outside i64 range.");
                 value->literal = Value(integer);
-            } else
+            } else if (token.text.find_first_of(".eE") == std::string::npos) {
+                const std::string digits = withoutDigitSeparators(token.text);
+                std::int64_t integer{};
+                auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), integer);
+                if (parsed.ec != std::errc{} || parsed.ptr != digits.data() + digits.size())
+                    throw std::runtime_error("Integer literal is outside i64 range.");
+                value->literal = Value(integer);
+            } else {
                 value->literal = Value(token.number);
+            }
             return value;
         }
         if (take(Token::Kind::String)) {
@@ -1415,6 +1500,11 @@ Value evaluate(const ExpressionPtr &expression, const Environment &environment, 
                 throw std::runtime_error("Unknown Vector method.");
             }
             if (auto string = std::get_if<std::string>(&receiver.data)) {
+                if (expression->left->text == "isEmpty") {
+                    if (!args.empty())
+                        throw std::runtime_error("String isEmpty expects no arguments.");
+                    return Value(string->empty());
+                }
                 const std::unordered_map<std::string, int> methods{
                     {"substring", JM_RT_SUBSTRING}, {"slice", JM_RT_SUBSTRING},
                     {"contains", JM_RT_CONTAINS},   {"startsWith", JM_RT_STARTS_WITH},
@@ -1473,6 +1563,11 @@ Value evaluate(const ExpressionPtr &expression, const Environment &environment, 
             }
             if (auto list = std::get_if<Value::ArrayPtr>(&receiver.data)) {
                 const std::string &method = expression->left->text;
+                if (method == "isEmpty") {
+                    if (!args.empty())
+                        throw std::runtime_error("List isEmpty expects no arguments.");
+                    return Value((*list)->empty());
+                }
                 if (method == "append" || method == "push") {
                     if (args.size() != 1)
                         throw std::runtime_error(method + " expects one value.");

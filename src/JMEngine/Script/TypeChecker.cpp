@@ -431,6 +431,8 @@ struct Checker {
                     return Type::Float;
                 }
                 if (receiver == Type::String) {
+                    if (method == "isEmpty")
+                        return Type::Bool;
                     if (method == "contains" || method == "startsWith" || method == "endsWith")
                         return Type::Bool;
                     if (method == "find" || method == "codepointLength")

@@ -250,6 +250,8 @@ Application::Application(ApplicationConfig config) : config_(std::move(config)) 
     ProjectSettings initialProject = ProjectStore::makeNewProject("My First Game");
     projectName_ = initialProject.name;
     projectId_ = initialProject.projectId;
+    scene_.replaceObjects({});
+    scene_.setName("새 장면");
     script_ = makeDefaultScript(scene_);
     languageCodeBuffer_ = languageStarterCode;
     languageEditor_ = std::make_unique<TextEditor>();
@@ -300,9 +302,35 @@ Application::Application(ApplicationConfig config) : config_(std::move(config)) 
                 io.FontDefault = koreanFont;
             }
         }
-        ImGui::StyleColorsDark();
-        ImGui::GetStyle().WindowRounding = 6.0F;
-        ImGui::GetStyle().FrameRounding = 4.0F;
+    ImGui::StyleColorsDark();
+    ImGuiStyle &style = ImGui::GetStyle();
+    style.WindowRounding = 10.0F;
+    style.ChildRounding = 8.0F;
+    style.FrameRounding = 6.0F;
+    style.GrabRounding = 6.0F;
+    style.PopupRounding = 8.0F;
+    style.ScrollbarRounding = 8.0F;
+    style.TabRounding = 6.0F;
+    style.WindowBorderSize = 1.0F;
+    style.FrameBorderSize = 0.0F;
+    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.055F, 0.067F, 0.090F, 1.0F);
+    style.Colors[ImGuiCol_ChildBg] = ImVec4(0.075F, 0.088F, 0.115F, 1.0F);
+    style.Colors[ImGuiCol_Border] = ImVec4(0.15F, 0.19F, 0.24F, 1.0F);
+    style.Colors[ImGuiCol_FrameBg] = ImVec4(0.105F, 0.125F, 0.16F, 1.0F);
+    style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.14F, 0.18F, 0.22F, 1.0F);
+    style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.16F, 0.22F, 0.25F, 1.0F);
+    style.Colors[ImGuiCol_Button] = ImVec4(0.11F, 0.16F, 0.19F, 1.0F);
+    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.16F, 0.24F, 0.26F, 1.0F);
+    style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.12F, 0.32F, 0.29F, 1.0F);
+    style.Colors[ImGuiCol_Header] = ImVec4(0.10F, 0.24F, 0.23F, 0.8F);
+    style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.12F, 0.31F, 0.29F, 0.9F);
+    style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.10F, 0.38F, 0.33F, 1.0F);
+    style.Colors[ImGuiCol_CheckMark] = ImVec4(0.38F, 0.88F, 0.72F, 1.0F);
+    style.Colors[ImGuiCol_SliderGrab] = ImVec4(0.30F, 0.76F, 0.63F, 1.0F);
+    style.Colors[ImGuiCol_SliderGrabActive] = ImVec4(0.42F, 0.92F, 0.76F, 1.0F);
+    style.Colors[ImGuiCol_Tab] = ImVec4(0.08F, 0.105F, 0.14F, 1.0F);
+    style.Colors[ImGuiCol_TabHovered] = ImVec4(0.13F, 0.26F, 0.25F, 1.0F);
+    style.Colors[ImGuiCol_TabSelected] = ImVec4(0.10F, 0.20F, 0.20F, 1.0F);
         if (!ImGui_ImplSDL3_InitForOpenGL(window_, glContext_)) {
             throw std::runtime_error("Could not initialize the editor input backend.");
         }
@@ -519,7 +547,7 @@ void Application::set2DMode(bool enabled) {
         return;
     twoDimensional_ = enabled;
     scene_.selectFirst(enabled ? ObjectKind::Sprite2D : ObjectKind::Cube3D);
-    SDL_SetWindowTitle(window_, enabled ? "JOSAMOSA ENGINE | 2D Scene" : "JOSAMOSA ENGINE | 3D Scene");
+    SDL_SetWindowTitle(window_, "Samat Studio");
 }
 
 void Application::render() {
@@ -554,96 +582,123 @@ void Application::drawEditorUI() {
     viewportVisible_ = false;
     viewportHovered_ = false;
 
-    const float toolbarWidth = std::min(920.0F, std::max(700.0F, io.DisplaySize.x - 20.0F));
-    ImGui::SetNextWindowPos(ImVec2((io.DisplaySize.x - toolbarWidth) * 0.5F, 8.0F), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(toolbarWidth, 72.0F), ImGuiCond_Always);
-    if (ImGui::Begin("Samat Studio Toolbar", nullptr, ImGuiWindowFlags_NoCollapse)) {
-        if (ImGui::Button(playing_ ? "■ 정지" : "▶ 실행", ImVec2(85.0F, 30.0F)))
-            togglePlaying();
+    const float toolbarWidth = std::max(700.0F, io.DisplaySize.x - 28.0F);
+    const ImGuiWindowFlags fixedPanel = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                                        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
+    ImGui::SetNextWindowPos(ImVec2(14.0F, 12.0F), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(toolbarWidth, 88.0F), ImGuiCond_Always);
+    if (ImGui::Begin("##SamatStudioHeader", nullptr, fixedPanel | ImGuiWindowFlags_NoScrollbar)) {
+        ImGui::TextColored(ImVec4(0.40F, 0.91F, 0.75F, 1.0F), "SAMAT");
         ImGui::SameLine();
+        ImGui::Text("Studio");
+        ImGui::SameLine();
+        ImGui::TextDisabled("· 코드와 장면을 함께 만드는 공간");
+        ImGui::SameLine(0.0F, 26.0F);
         ImGui::BeginDisabled(playing_);
-        if (ImGui::Button("3D 장면", ImVec2(80.0F, 30.0F)))
-            set2DMode(false);
+        if (ImGui::Button("장면 열기", ImVec2(112.0F, 30.0F))) {
+            const auto initial = haeryeFilePath_.empty() ? std::filesystem::path{}
+                                                         : utf8ToPath(haeryeFilePath_);
+            if (const auto selected = studio::chooseOpenHaeryeFile(initial)) {
+                std::ifstream input(*selected, std::ios::binary);
+                if (input) {
+                    std::string source(std::istreambuf_iterator<char>(input), {});
+                    try {
+                        loadHaerye(std::move(source));
+                        haeryeFilePath_ = pathToUtf8(*selected);
+                        activeWorkspace_ = 0;
+                        requestedWorkspace_ = 0;
+                    } catch (const std::exception &error) {
+                        scriptStatus_ = std::string{"장면을 열지 못했어요 · "} + error.what();
+                    }
+                } else {
+                    scriptStatus_ = "Haerye 장면 파일을 열 수 없습니다.";
+                }
+            }
+        }
         ImGui::SameLine();
-        if (ImGui::Button("2D 장면", ImVec2(80.0F, 30.0F)))
-            set2DMode(true);
+        if (ImGui::Button("Samat 코드 열기", ImVec2(136.0F, 30.0F))) {
+            const auto initial = languageFilePath_.empty() ? std::filesystem::path{}
+                                                           : utf8ToPath(languageFilePath_);
+            if (const auto selected = studio::chooseOpenScriptFile(initial)) {
+                languagePendingDocumentAction_ = 2;
+                languagePendingFilePath_ = pathToUtf8(*selected);
+                languageExternalOpenRequested_ = true;
+                requestedWorkspace_ = 1;
+            }
+        }
         ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::TextDisabled(playing_ ? "←/→ 이동 · Space 점프" : "F5 실행 · Shift+F5 정지");
+        ImGui::BeginDisabled(!playing_ && !languagePlayEnabled_);
+        ImGui::PushStyleColor(ImGuiCol_Button, playing_ ? ImVec4(0.40F, 0.19F, 0.20F, 1.0F)
+                                                       : ImVec4(0.10F, 0.40F, 0.33F, 1.0F));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, playing_ ? ImVec4(0.53F, 0.22F, 0.24F, 1.0F)
+                                                              : ImVec4(0.13F, 0.50F, 0.41F, 1.0F));
+        if (ImGui::Button(playing_ ? "■  정지" : "▶  실행", ImVec2(104.0F, 30.0F)))
+            togglePlaying();
+        ImGui::PopStyleColor(2);
+        ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("Save"))
-            saveProject();
+        ImGui::TextDisabled("F5");
+        ImGui::Separator();
+        const std::string sceneLabel = haeryeFilePath_.empty()
+                                           ? "장면을 열어 시작하세요"
+                                           : pathToUtf8(utf8ToPath(haeryeFilePath_).filename());
+        const std::string languageLabel = languageFilePath_.empty()
+                                              ? "Samat 코드 미선택"
+                                              : pathToUtf8(utf8ToPath(languageFilePath_).filename());
+        ImGui::TextColored(ImVec4(0.50F, 0.76F, 0.78F, 1.0F), "HAERYE");
         ImGui::SameLine();
-        if (ImGui::Button("Project..."))
-            projectDialogOpen_ = true;
+        ImGui::TextDisabled("%s", sceneLabel.c_str());
         ImGui::SameLine();
-        ImGui::TextDisabled("%s", projectName_.c_str());
+        ImGui::TextDisabled("  /  ");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.62F, 0.73F, 0.98F, 1.0F), "SAMAT");
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", languageLabel.c_str());
+        if (playing_) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.40F, 0.91F, 0.75F, 1.0F), "실행 중");
+        }
     }
     ImGui::End();
-
-    if (projectDialogOpen_) {
-        ImGui::OpenPopup("Project");
-        projectDialogOpen_ = false;
-    }
-    if (ImGui::BeginPopupModal("Project", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::InputText("Project name", &projectName_);
-        ImGui::InputText("Project folder", &projectPathInput_);
-        ImGui::TextWrapped("Projects save project.jm and scenes/main.scene in this folder.");
-        if (!projectStatus_.empty())
-            ImGui::TextWrapped("%s", projectStatus_.c_str());
-        if (ImGui::Button("New Project", ImVec2(120.0F, 0.0F)))
-            createProject();
-        ImGui::SameLine();
-        if (ImGui::Button("Save Project", ImVec2(120.0F, 0.0F)))
-            saveProject();
-        ImGui::SameLine();
-        if (ImGui::Button("Open Project", ImVec2(120.0F, 0.0F)))
-            openProject();
-        ImGui::SameLine();
-        if (ImGui::Button("Close", ImVec2(80.0F, 0.0F)))
-            ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-    }
 
     const bool focusedWorkspace = activeWorkspace_ != 0;
     const float workspaceX = focusedWorkspace ? 10.0F : 250.0F;
     const float workspaceWidth = std::max(300.0F, io.DisplaySize.x - (focusedWorkspace ? 20.0F : 550.0F));
-    ImGui::SetNextWindowPos(ImVec2(workspaceX, 94.0F), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(workspaceWidth, std::max(250.0F, io.DisplaySize.y - 108.0F)),
+    ImGui::SetNextWindowPos(ImVec2(workspaceX, 112.0F), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(workspaceWidth, std::max(250.0F, io.DisplaySize.y - 126.0F)),
                              ImGuiCond_Always);
-    if (ImGui::Begin("작업 공간", nullptr,
-                     ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings)) {
-        if (ImGui::BeginTabBar("JMWorkspaceTabs")) {
+    if (ImGui::Begin("##SamatStudioWorkspace", nullptr,
+                     fixedPanel | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoScrollbar)) {
+        if (ImGui::BeginTabBar("SamatStudioWorkspaces")) {
             if (ImGui::BeginTabItem("장면", nullptr,
                                     requestedWorkspace_ == 0 ? ImGuiTabItemFlags_SetSelected
                                                              : ImGuiTabItemFlags_None)) {
                 activeWorkspace_ = 0;
-                ImGui::TextDisabled(twoDimensional_
-                                        ? "2D 장면 · 가운데 버튼 드래그: 화면 이동 · 휠: 확대/축소"
-                                        : "3D 장면 · 왼쪽 버튼 드래그: 궤도 회전 · 휠: 확대/축소");
-                ImGui::SameLine();
-                if (twoDimensional_) {
-                    if (ImGui::SmallButton("+ 2D 오브젝트"))
-                        scene_.create(ObjectKind::Sprite2D);
-                } else if (ImGui::SmallButton("+ 3D 큐브")) {
-                    scene_.create(ObjectKind::Cube3D);
+                ImGui::TextDisabled("장면 미리보기  ·  가운데 버튼으로 이동  ·  휠로 확대/축소");
+                if (!haeryeFilePath_.empty()) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("· 속성 변경은 현재 미리보기에 적용됩니다");
                 }
+                if (scene_.objects().empty())
+                    ImGui::TextDisabled("Haerye 장면을 열거나 왼쪽에서 오브젝트를 추가하세요.");
                 captureViewport();
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("코드", nullptr,
+            if (ImGui::BeginTabItem("Samat 코드", nullptr,
                                     requestedWorkspace_ == 1 ? ImGuiTabItemFlags_SetSelected
                                                              : ImGuiTabItemFlags_None)) {
                 activeWorkspace_ = 1;
                 drawCodePanel();
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("실행 화면", nullptr,
+            if (ImGui::BeginTabItem("미리보기", nullptr,
                                     requestedWorkspace_ == 2 ? ImGuiTabItemFlags_SetSelected
                                                              : ImGuiTabItemFlags_None)) {
                 activeWorkspace_ = 2;
-                ImGui::TextDisabled(playing_ ? "게임 실행 중 · ←/→ 이동 · Space 점프"
-                                             : "게임 미리보기 · 실행을 누르면 시작");
+                ImGui::TextDisabled(playing_ ? "게임 실행 중 · 입력을 눌러 확인하세요"
+                                             : "장면과 Samat 코드를 함께 확인하는 미리보기");
                 captureViewport();
                 ImGui::EndTabItem();
             }
@@ -654,17 +709,14 @@ void Application::drawEditorUI() {
     ImGui::End();
 
     if (activeWorkspace_ == 0) {
-        ImGui::SetNextWindowPos(ImVec2(10.0F, 94.0F), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(230.0F, std::max(250.0F, io.DisplaySize.y - 108.0F)),
+        ImGui::SetNextWindowPos(ImVec2(14.0F, 112.0F), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(218.0F, std::max(250.0F, io.DisplaySize.y - 126.0F)),
                                  ImGuiCond_Always);
-        if (ImGui::Begin("Hierarchy", nullptr, ImGuiWindowFlags_NoSavedSettings)) {
-            ImGui::TextDisabled(twoDimensional_ ? "2D 오브젝트" : "3D 오브젝트");
-            if (twoDimensional_) {
-                if (ImGui::Button("+ 2D 오브젝트", ImVec2(-1.0F, 28.0F)))
-                    scene_.create(ObjectKind::Sprite2D);
-            } else if (ImGui::Button("+ 3D 큐브", ImVec2(-1.0F, 28.0F))) {
-                scene_.create(ObjectKind::Cube3D);
-            }
+        if (ImGui::Begin("장면 오브젝트", nullptr,
+                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+            ImGui::TextDisabled("HAERYE SCENE");
+            if (ImGui::Button("+ 오브젝트", ImVec2(-1.0F, 30.0F)))
+                scene_.create(ObjectKind::Sprite2D);
             ImGui::Separator();
             if (ImGui::BeginChild("Scene objects", ImVec2(0.0F, 0.0F), ImGuiChildFlags_Borders)) {
                 for (const GameObject &object : scene_.objects()) {
@@ -672,10 +724,7 @@ void Application::drawEditorUI() {
                         continue;
                     const GameObject *selected = scene_.selected();
                     ImGui::PushID(object.id.c_str());
-                    const char *layerNames[] = {"배경", "월드", "캐릭터", "효과", "UI"};
-                    const std::string rowName =
-                        object.name + "  ·  " + layerNames[std::clamp(object.layer, 0, 4)];
-                    if (ImGui::Selectable(rowName.c_str(),
+                    if (ImGui::Selectable(object.name.c_str(),
                                           selected != nullptr && selected->id == object.id)) {
                         scene_.select(object.id);
                     }
@@ -686,58 +735,24 @@ void Application::drawEditorUI() {
         }
         ImGui::End();
 
-        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 290.0F, 94.0F), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(280.0F, std::max(250.0F, io.DisplaySize.y - 108.0F)),
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 264.0F, 112.0F), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(250.0F, std::max(250.0F, io.DisplaySize.y - 126.0F)),
                                  ImGuiCond_Always);
-        if (ImGui::Begin("Inspector", nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+        if (ImGui::Begin("선택 항목", nullptr,
+                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
             GameObject *object = scene_.selected();
             if (object == nullptr || object->kind != activeKind) {
-                ImGui::TextDisabled("Select an object from the hierarchy.");
+                ImGui::TextDisabled("왼쪽 목록에서 오브젝트를 선택하세요.");
             } else {
-                ImGui::TextDisabled(object->kind == ObjectKind::Cube3D ? "3D CUBE" : "2D SPRITE");
-                ImGui::InputText("Name", &object->name);
-                ImGui::SeparatorText("Transform");
-                if (object->kind == ObjectKind::Cube3D) {
-                    ImGui::DragFloat3("Position XYZ", &object->position.x, 0.05F, -100.0F, 100.0F, "%.2f");
-                    ImGui::DragFloat3("Rotation XYZ", &object->rotationDegrees.x, 1.0F, -360.0F, 360.0F,
-                                      "%.0f deg");
-                    ImGui::DragFloat3("Scale", &object->scale.x, 0.02F, 0.05F, 20.0F, "%.2f");
-                } else {
-                    ImGui::DragFloat2("위치 XY", &object->position.x, 0.05F, -100.0F, 100.0F, "%.2f");
-                    ImGui::DragFloat("회전 Z", &object->rotationDegrees.z, 1.0F, -360.0F, 360.0F, "%.0f deg");
-                    ImGui::DragFloat2("Scale", &object->scale.x, 0.02F, 0.05F, 20.0F, "%.2f");
-                }
-                ImGui::ColorEdit3("Color", &object->color.x);
-                ImGui::Checkbox("표시", &object->visible);
-                const char *layerNames[] = {"0 · 배경", "1 · 월드", "2 · 캐릭터", "3 · 효과", "4 · UI"};
-                int layer = std::clamp(object->layer, 0, 4);
-                if (ImGui::BeginCombo("레이어", layerNames[layer])) {
-                    for (int index = 0; index < 5; ++index) {
-                        if (ImGui::Selectable(layerNames[index], layer == index))
-                            object->layer = index;
-                    }
-                    ImGui::EndCombo();
-                }
-                ImGui::DragFloat("Move speed", &object->movementSpeed, 0.1F, 0.0F, 100.0F, "%.1f units/s");
-                if (object->kind == ObjectKind::Sprite2D) {
-                    ImGui::SeparatorText("물리");
-                    ImGui::Checkbox("물리 사용", &object->physicsEnabled);
-                    if (object->physicsEnabled) {
-                        ImGui::Checkbox("고정 오브젝트", &object->isStatic);
-                        if (!object->isStatic)
-                            ImGui::DragFloat("질량", &object->mass, 0.05F, 0.1F, 100.0F, "%.2f");
-                        ImGui::DragFloat("중력 비율", &object->gravityScale, 0.05F, 0.0F, 10.0F, "%.2f");
-                    }
-                }
-                ImGui::SeparatorText("Behavior blocks");
-                ImGui::TextColored(ImVec4(0.35F, 0.75F, 0.95F, 1.0F), "When Play is pressed");
-                if (ImGui::Button(object->spinWhenPlaying ? "Remove: rotate continuously"
-                                                          : "+ Add: rotate continuously")) {
-                    object->spinWhenPlaying = !object->spinWhenPlaying;
-                }
-                ImGui::TextDisabled("The block runs until Stop is pressed.");
-                ImGui::Spacing();
-                if (ImGui::Button("Delete object", ImVec2(-1.0F, 28.0F)))
+                ImGui::TextDisabled("HAERYE OBJECT");
+                ImGui::InputText("이름", &object->name);
+                ImGui::SeparatorText("변환");
+                ImGui::DragFloat2("위치", &object->position.x, 0.05F, -100.0F, 100.0F, "%.2f");
+                ImGui::DragFloat("회전", &object->rotationDegrees.z, 1.0F, -360.0F, 360.0F, "%.0f°");
+                ImGui::DragFloat2("크기", &object->scale.x, 0.02F, 0.05F, 20.0F, "%.2f");
+                ImGui::SeparatorText("모양");
+                ImGui::ColorEdit3("색상", &object->color.x);
+                if (ImGui::Button("오브젝트 삭제", ImVec2(-1.0F, 30.0F)))
                     scene_.deleteSelected();
             }
         }
@@ -746,18 +761,7 @@ void Application::drawEditorUI() {
 }
 
 void Application::drawCodePanel() {
-    if (!ImGui::BeginTabBar("CodeEditorModes"))
-        return;
-    if (ImGui::BeginTabItem("게임 스크립트")) {
-        drawLegacyCodePanel();
-        ImGui::EndTabItem();
-    }
-    if (ImGui::BeginTabItem("Samat Studio", nullptr,
-                            languageQuitPending_ ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None)) {
-        drawLanguageCorePanel();
-        ImGui::EndTabItem();
-    }
-    ImGui::EndTabBar();
+    drawLanguageCorePanel();
 }
 
 void Application::drawLegacyCodePanel() {
@@ -861,7 +865,7 @@ void Application::drawLegacyCodePanel() {
             }
         }
         const float editorHeight = std::max(160.0F, ImGui::GetContentRegionAvail().y - 70.0F);
-        ImGui::InputTextMultiline("##Samat", &codeBuffer_, ImVec2(-1.0F, editorHeight));
+        ImGui::InputTextMultiline("##samat", &codeBuffer_, ImVec2(-1.0F, editorHeight));
     }
 
     ImGui::SeparatorText("첫 게임 만들기");
@@ -943,6 +947,7 @@ void Application::drawLanguageCorePanel() {
         languageCodeBuffer_ = std::move(source);
         languageFilePath_ = requestedPath;
         languagePathInput_ = requestedPath;
+        languagePlayEnabled_ = true;
         languageDirty_ = false;
         const auto &parseDiagnostic = codeParsed ? codeDiagnostic : koreanDiagnostic;
         languageErrorLine_ = codeParsed || koreanParsed ? 0 : parseDiagnostic.line;
@@ -991,6 +996,13 @@ void Application::drawLanguageCorePanel() {
         languagePendingFilePath_.clear();
         languagePendingDocumentAction_ = 0;
     };
+    if (languageExternalOpenRequested_) {
+        languageExternalOpenRequested_ = false;
+        if (languageDirty_)
+            ImGui::OpenPopup("저장하지 않은 변경사항");
+        else
+            performDocumentAction();
+    }
     ImGui::TextUnformatted("Samat Studio");
     ImGui::SameLine();
     ImGui::Checkbox("초보자 모드", &languageBeginnerMode_);
@@ -1088,12 +1100,12 @@ void Application::drawLanguageCorePanel() {
         }
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("Code / Korean Syntax → same JM AST");
+    ImGui::TextDisabled("Code / 訓C正音  ·  하나의 실행 구조");
     auto parseEditorProgram = [&](Program &program, Diagnostic &diagnostic) {
         return languageKoreanSyntax_ ? parseKorean(languageCodeBuffer_, program, diagnostic)
                                      : parseCode(languageCodeBuffer_, program, diagnostic);
     };
-    ImGui::TextDisabled("독립 Samat · Parser → AST → Runtime · 엔진 장면 없이 계산 코드 실행");
+    ImGui::TextDisabled("Samat 소스 편집 · 게임 장면 실행은 상단 ▶ 실행 · 독립 코드는 Interpreter로 실행");
     ImGui::SameLine();
     if (ImGui::BeginCombo("예제 선택", "Samat v1.0")) {
         struct SampleEntry {
@@ -1187,7 +1199,7 @@ void Application::drawLanguageCorePanel() {
         }
         languageErrorLine_ = languageCompiled_ ? 0 : diagnostic.line;
         languageDiagnostic_ = languageCompiled_ ? std::string{} : diagnostic.message;
-        languageStatus_ = languageCompiled_ ? "컴파일 성공 · 문법을 JM AST로 변환했어요."
+        languageStatus_ = languageCompiled_ ? "컴파일 성공 · 공유 AST로 변환했어요."
                                             : languageBeginnerMode_ ? beginnerDiagnostic(diagnostic)
                                                                     : diagnostic.message;
         languageOutput_.clear();
@@ -2006,7 +2018,7 @@ void Application::loadHaerye(std::string source) {
 }
 bool Application::applyLanguageEdit(std::string source, bool korean) {
     if (!languageRuntime_) {
-        languageStatus_ = "Samat Play를 먼저 실행하세요.";
+        languageStatus_ = "Samat 게임 실행을 먼저 시작하세요.";
         return false;
     }
     script::Program candidate;
@@ -2079,7 +2091,7 @@ void Application::togglePlaying() {
         activeWorkspace_ = 2;
         requestedWorkspace_ = 2;
         tutorialPlayRun_ = true;
-        scriptStatus_ = "Samat 이벤트 실행을 시작했어요.";
+        scriptStatus_ = "Samat 게임 실행을 시작했어요.";
         return;
     }
     ScriptDocument candidate = script_;

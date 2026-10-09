@@ -27,7 +27,7 @@ LLVM JIT and Linux AOT now execute concrete Struct fields, Vector2/3, Color valu
 
 ## 4. Files
 
-`RuntimeABI.h/.cpp`, `JMIR.hpp/.cpp`, `IRVerifier.cpp`, `LLVMBackend.cpp`, `LanguageCore.hpp/.cpp`, `TypeChecker.cpp`, `X64Backend.cpp`, `EngineScriptAPI.cpp`, `Scene.hpp/.cpp`, Application read-only scene accessor, Sandbox smoke controls, CLI version, `CMakeLists.txt`, `NativeDataRegression.cpp`, benchmark, paired `examples/Samat/v06` samples, and `.github/workflows/Samat-core.yml`.
+`RuntimeABI.h/.cpp`, `JMIR.hpp/.cpp`, `IRVerifier.cpp`, `LLVMBackend.cpp`, `LanguageCore.hpp/.cpp`, `TypeChecker.cpp`, `X64Backend.cpp`, `EngineScriptAPI.cpp`, `Scene.hpp/.cpp`, Application read-only scene accessor, Sandbox smoke controls, CLI version, `CMakeLists.txt`, `NativeDataRegression.cpp`, benchmark, paired `examples/Samat/archive/v0.6` samples, and `.github/workflows/samat-core.yml`.
 
 ## 5. Type system
 
@@ -207,14 +207,14 @@ The existing interpreter consumes shared AST; native backends all lower through 
 source /workspace/.tools/env.sh
 cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
-build/SamatCompiler check examples/Samat/v06/native-struct.st
-build/SamatCompiler run examples/Samat/v06/native-vector.st
-build/SamatCompiler --llvm-jit main examples/Samat/v06/native-map.st -O
-build/SamatCompiler build examples/Samat/v06/native-tuple-range.st -o /tmp/jm-v06
+build/Samat check examples/Samat/archive/v0.6/native-struct.st
+build/Samat run examples/Samat/archive/v0.6/native-vector.st
+build/Samat --llvm-jit main examples/Samat/archive/v0.6/native-map.st -O
+build/Samat build examples/Samat/archive/v0.6/native-tuple-range.st -o /tmp/jm-v06
 /tmp/jm-v06  # expected exit 42
 ```
 
-Independent core: `-DJMENGINE_BUILD_ENGINE=OFF`. No LLVM: `-DJMENGINE_ENABLE_LLVM=OFF`. Sanitizers: `-DSamat_ENABLE_SANITIZERS=ON`, with LLVM disabled in the tested sanitizer configurations. Install the `Samat` component to keep CLI and runtime archive together.
+Independent core: `-DJMENGINE_BUILD_ENGINE=OFF`. No LLVM: `-DJMENGINE_ENABLE_LLVM=OFF`. Sanitizers: `-DSAMAT_ENABLE_SANITIZERS=ON`, with LLVM disabled in the tested sanitizer configurations. Install the `Samat` component to keep CLI and runtime archive together.
 
 ## Final validation and measurements
 

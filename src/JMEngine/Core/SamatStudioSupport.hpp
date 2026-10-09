@@ -34,6 +34,7 @@ bool replaceInputKeyString(std::string &source, std::size_t cursor, std::string_
 bool loadScriptFile(const std::filesystem::path &path, std::string &source, std::string &error);
 bool saveScriptFile(const std::filesystem::path &path, std::string_view source, std::string &error);
 std::optional<std::filesystem::path> chooseOpenScriptFile(const std::filesystem::path &initialPath = {});
+std::optional<std::filesystem::path> chooseOpenHaeryeFile(const std::filesystem::path &initialPath = {});
 std::optional<std::filesystem::path> chooseSaveScriptFile(const std::filesystem::path &initialPath = {});
 
 struct RunSnapshot {

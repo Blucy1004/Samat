@@ -27,22 +27,22 @@ Use CMake 3.24+, a C++20 compiler, Git, OpenGL development files, and the platfo
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DJMENGINE_ENABLE_LLVM=ON
 cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
-build/SamatCompiler --version
-build/SamatCompiler run examples/Samat/v05/factorial.st
-build/SamatCompiler check examples/Samat/v05/factorial.jmk
-build/SamatCompiler --ast examples/Samat/v05/factorial.st
-build/SamatCompiler --ir examples/Samat/v05/factorial.st
-build/SamatCompiler --emit-llvm examples/Samat/v05/factorial.st
-build/SamatCompiler --llvm-jit main examples/Samat/v05/factorial.st -O
-build/SamatCompiler --native main examples/Samat/native-factorial.st
-build/SamatCompiler --emit-obj factorial.o examples/Samat/v05/factorial.st
-build/SamatCompiler build examples/Samat/v05/factorial.st -o factorial
-build/SamatCompiler --build factorial.exe examples/Samat/v05/factorial.st --target x86_64-pc-windows-msvc
+build/Samat --version
+build/Samat run examples/Samat/archive/v0.5/factorial.st
+build/Samat check examples/Samat/archive/v0.5/factorial.jmk
+build/Samat --ast examples/Samat/archive/v0.5/factorial.st
+build/Samat --ir examples/Samat/archive/v0.5/factorial.st
+build/Samat --emit-llvm examples/Samat/archive/v0.5/factorial.st
+build/Samat --llvm-jit main examples/Samat/archive/v0.5/factorial.st -O
+build/Samat --native main examples/Samat/archive/native-factorial.st
+build/Samat --emit-obj factorial.o examples/Samat/archive/v0.5/factorial.st
+build/Samat build examples/Samat/archive/v0.5/factorial.st -o factorial
+build/Samat --build factorial.exe examples/Samat/archive/v0.5/factorial.st --target x86_64-pc-windows-msvc
 ```
 
 `LLVM_DIR` may point to an LLVM CMake package. `-DJMENGINE_ENABLE_LLVM=OFF` builds the interpreter and bootstrap without LLVM. Missing LLVM produces an explicit diagnostic for LLVM commands and disables the editor's LLVM buttons. `--linker <path>` overrides the detected clang/lld-link executable. No private workstation path is built into source.
 
-Plain `SamatCompiler file` remains compatible. Interpreter `run` invokes `main()` when there are no top-level actions; `--entry name` selects an entry explicitly. Start handlers run with `eventName="start"`. Native JIT modes print the full language return value; AOT uses the operating system exit status. Linux truncates that status to 8 bits: use a program that checks a large result and returns 42 or 1, as the AOT regression test does. Windows AOT currently uses a freestanding `jm_entry` entry and lld-link, without a CRT; it can link scalar programs without external runtime/library dependencies.
+Plain `Samat file` remains compatible. Interpreter `run` invokes `main()` when there are no top-level actions; `--entry name` selects an entry explicitly. Start handlers run with `eventName="start"`. Native JIT modes print the full language return value; AOT uses the operating system exit status. Linux truncates that status to 8 bits: use a program that checks a large result and returns 42 or 1, as the AOT regression test does. Windows AOT currently uses a freestanding `jm_entry` entry and lld-link, without a CRT; it can link scalar programs without external runtime/library dependencies.
 
 ## Types and functions
 
@@ -81,7 +81,7 @@ values의 0번째 값을 10으로 정한다.
     i를 출력한다.
 ```
 
-Typed functions use `함수 add(a: Int, b: Int) -> Int:`. `반복을 멈춘다.` and `다음 반복을 진행한다.` represent break/continue; `실행한다 expression` represents an expression statement. Native/shared examples live under `examples/Samat/v05`; English and Korean samples are rendered from the same AST. The renderers cover the scalar, collection, function, import, and event grammar and preserve identifier spelling. Hangul particles use Unicode syllable decomposition, including 길로 / 집으로. This is not a natural-language/NLP parser.
+Typed functions use `함수 add(a: Int, b: Int) -> Int:`. `반복을 멈춘다.` and `다음 반복을 진행한다.` represent break/continue; `실행한다 expression` represents an expression statement. Native/shared examples live under `examples/Samat/archive/v0.5`; English and Korean samples are rendered from the same AST. The renderers cover the scalar, collection, function, import, and event grammar and preserve identifier spelling. Hangul particles use Unicode syllable decomposition, including 길로 / 집으로. This is not a natural-language/NLP parser.
 
 ## Engine APIs and events
 
@@ -101,12 +101,12 @@ The IR verifier checks canonical blocks, terminators, branch targets, unique/def
 
 ## Validation and limits
 
-`jmengine_smoke` retains movement/jump, physics, project persistence, particles, Korean/Code AST checks, integer native recursion, and C++ callback tests. `Samat_runtime_memory` additionally checks escaping aliases, foreach mutation, cycle rejection and repeated destruction; it was also run with AddressSanitizer, UndefinedBehaviorSanitizer and leak detection. `Samat_compiler_regression` adds type/collection/runtime errors, ranges/control flow/globals, scalar LLVM parity, round trips, IR rejection tests, real engine event adapters, 64 seeded bounded differential programs, object emission, and a standalone AOT factorial check. Capability skips are printed explicitly. LLVM-off builds execute interpreter/bootstrap checks and skip LLVM/AOT.
+`jmengine_smoke` retains movement/jump, physics, project persistence, particles, Korean/Code AST checks, integer native recursion, and C++ callback tests. `samat_runtime_memory` additionally checks escaping aliases, foreach mutation, cycle rejection and repeated destruction; it was also run with AddressSanitizer, UndefinedBehaviorSanitizer and leak detection. `samat_compiler_regression` adds type/collection/runtime errors, ranges/control flow/globals, scalar LLVM parity, round trips, IR rejection tests, real engine event adapters, 64 seeded bounded differential programs, object emission, and a standalone AOT factorial check. Capability skips are printed explicitly. LLVM-off builds execute interpreter/bootstrap checks and skip LLVM/AOT.
 
 ```sh
 cmake -S . -B build -DJMENGINE_BUILD_BENCHMARKS=ON
 cmake --build build --parallel 4
-build/Samat_benchmark
+build/samat_benchmark
 build/jmengine_sandbox --smoke-frames 3
 ```
 

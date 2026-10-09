@@ -88,6 +88,17 @@ fn main() -> Int:
         return total + 11
     return 1
 )";
+const std::string numericConvenience = R"(fn main() -> Int:
+    return 1_000 + 0b10_10 + 0x2A
+)";
+const std::string isEmptyConvenience = R"(fn main() -> Int:
+    let values: List<Int> = []
+    if "".isEmpty() && !"Samat".isEmpty() && values.isEmpty():
+        values.push(1)
+        if !values.isEmpty():
+            return 42
+    return 0
+)";
 void ffi() {
     if (!LLVMBackend::available()) {
         std::cout << "UNTESTED typed LLVM FFI: LLVM disabled\n";
@@ -299,6 +310,8 @@ void aot() {
 int main() {
     try {
         parity("native UTF-8 String/List algorithm", collections, "42");
+        parity("numeric separators and binary/hex literals", numericConvenience, "1052");
+        parity("String/List isEmpty", isEmptyConvenience, "42");
         parity(
             "String methods",
             "fn main() -> String:\n    return \"  Hello 사람  \".trim().replace(\"Hello\", \"JM\").upper()\n",

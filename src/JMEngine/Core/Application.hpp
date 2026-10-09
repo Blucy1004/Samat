@@ -72,6 +72,7 @@ class Application {
     std::string languageStatus_;
     std::string languageOutput_;
     std::string languageFilePath_;
+    std::string haeryeFilePath_;
     std::string languagePathInput_;
     std::string languagePendingFilePath_;
     std::string languageKeySearch_;
@@ -112,6 +113,7 @@ class Application {
     bool languageBeginnerMode_{true};
     bool languageDirty_{false};
     bool languageQuitPending_{false};
+    bool languageExternalOpenRequested_{false};
     bool languageKeyRangeValid_{false};
     bool languagePlayEnabled_{false};
     int languagePlayBackend_{};

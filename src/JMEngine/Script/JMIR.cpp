@@ -76,6 +76,8 @@ Type inferredExpression(const ExpressionPtr &value, const std::unordered_map<std
             auto method = value->left->text;
             auto receiver = value->left->left;
             auto receiverType = inferredExpression(receiver, variables, functions);
+            if (method == "isEmpty" && (receiverType == Type::String || receiverType == Type::List))
+                return Type::Bool;
             if (receiverType == Type::Vector2 || receiverType == Type::Vector3)
                 return method == "normalized" || method == "cross" || method == "lerp" ? receiverType
                                                                                        : Type::Float;
@@ -1075,6 +1077,17 @@ struct Lowerer {
                         if (args.size() != count)
                             throw std::runtime_error("Method argument count mismatch: " + member.text);
                     };
+                    if ((type == Type::String || type == Type::List) && member.text == "isEmpty") {
+                        arity(0);
+                        auto length = runtime(JM_RT_LENGTH,
+                                              {receiver, integer(0), integer(static_cast<int>(type))}, Type::Int);
+                        Instruction empty;
+                        empty.op = Op::Equal;
+                        empty.left = length;
+                        empty.right = integer(0);
+                        empty.type = Type::Bool;
+                        return emit(empty);
+                    }
                     if (type == Type::Map) {
                         auto method = member.text;
                         if (method == "containsKey" || method == "remove") {

@@ -54,7 +54,7 @@ int main(int argc, char **argv) {
             throw std::runtime_error("--language can be started only once per sandbox process.");
         if (cycles > 1 && (script.empty() || !frames))
             throw std::runtime_error("Repeated Play smoke requires a script and bounded frames.");
-        jm::Application app({"Samat Studio | JM Engine", 1280, 720});
+        jm::Application app({"Samat Studio", 1280, 720});
         if (!haeryeFile.empty()) {
             std::ifstream input(haeryeFile, std::ios::binary);
             if (!input)
