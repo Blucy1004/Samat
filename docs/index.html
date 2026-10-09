@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#211b42">
+  <meta name="description" content="사람의 뜻이 CPU에 사맛게 하노라. Code Syntax와 訓C正音이 하나의 AST와 실행 체계를 공유하는 프로그래밍 언어, Samat을 만나 보세요.">
+  <title>Samat — 사람의 뜻이 CPU에 사맛게 하노라</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #211b42;
+      --ink-soft: #554d79;
+      --violet: #5141bf;
+      --violet-bright: #7264ec;
+      --lavender: #edeaff;
+      --paper: #faf9f6;
+      --white: #fff;
+      --line: #e9e6f2;
+      --mint: #bff2dd;
+      --muted: #77728d;
+      --shadow: 0 24px 70px rgba(35, 26, 86, .13);
+      font-family: "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; color: var(--ink); background: var(--paper); line-height: 1.7; }
+    a { color: inherit; text-decoration: none; }
+    a:focus-visible, button:focus-visible { outline: 3px solid #9c90ff; outline-offset: 3px; }
+    .wrap { width: min(1120px, calc(100% - 48px)); margin: 0 auto; }
+    .topbar { height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 28px; }
+    .brand { display: inline-flex; align-items: center; gap: 11px; font-weight: 850; letter-spacing: .11em; white-space: nowrap; }
+    .brand-mark { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 12px; color: #fff; background: var(--violet); font-size: 19px; letter-spacing: 0; }
+    .brand small { display: block; margin-top: -4px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .16em; }
+    nav { display: flex; gap: 30px; color: var(--ink-soft); font-size: 13px; font-weight: 650; }
+    nav a:hover, .text-link:hover { color: var(--violet); }
+    .github-link { padding: 9px 15px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; font-weight: 750; white-space: nowrap; }
+    .hero { position: relative; overflow: hidden; padding: 75px 0 84px; color: white; background: radial-gradient(ellipse at 88% 18%, rgba(139, 119, 255, .34), transparent 38%), linear-gradient(125deg, #211b42 0%, #312765 54%, #5141bf 100%); }
+    .hero::after { content: "사맛"; position: absolute; right: -22px; bottom: -150px; color: rgba(255,255,255,.035); font-family: serif; font-weight: 900; font-size: clamp(260px, 39vw, 540px); line-height: 1; pointer-events: none; }
+    .hero-grid { position: relative; z-index: 1; display: grid; grid-template-columns: 1fr .94fr; gap: 58px; align-items: center; }
+    .eyebrow { display: inline-flex; align-items: center; gap: 9px; color: #d0caff; font-size: 11px; font-weight: 800; letter-spacing: .2em; text-transform: uppercase; }
+    .eyebrow::before { content: ""; width: 22px; height: 1px; background: var(--mint); }
+    h1 { margin: 23px 0 17px; font-size: clamp(42px, 5.3vw, 68px); line-height: 1.2; letter-spacing: -.065em; }
+    h1 span { color: var(--mint); }
+    .hero-copy { max-width: 520px; color: #d8d4ec; font-size: 16px; line-height: 1.9; }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 11px; margin-top: 29px; }
+    .button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 46px; padding: 0 18px; border: 1px solid transparent; border-radius: 12px; font-size: 13px; font-weight: 800; transition: transform .18s ease, background .18s ease; }
+    .button:hover { transform: translateY(-2px); }
+    .button-primary { color: #1b1830; background: var(--mint); }
+    .button-ghost { color: white; border-color: rgba(255,255,255,.25); background: rgba(255,255,255,.06); }
+    .hero-notes { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 30px; color: #c6c0e4; font-size: 11px; }
+    .hero-notes span::before { content: "✦"; margin-right: 7px; color: var(--mint); }
+    .hero-art { position: relative; padding: 12px; border: 1px solid rgba(255,255,255,.2); border-radius: 22px; background: rgba(255,255,255,.09); box-shadow: 0 30px 80px rgba(7,4,28,.28); transform: rotate(1deg); }
+    .hero-art img { display: block; width: 100%; border-radius: 13px; }
+    .art-tag { position: absolute; left: -17px; bottom: 23px; padding: 9px 13px; border: 1px solid rgba(255,255,255,.55); border-radius: 11px; color: var(--ink); background: var(--mint); box-shadow: 0 9px 24px rgba(10,8,36,.2); font-size: 11px; font-weight: 850; transform: rotate(-3deg); }
+    main section { padding: 89px 0; }
+    .section-head { max-width: 660px; margin: 0 auto 34px; text-align: center; }
+    .section-kicker { color: var(--violet); font-size: 11px; font-weight: 850; letter-spacing: .16em; }
+    h2 { margin: 8px 0 11px; font-size: clamp(29px, 4vw, 42px); line-height: 1.3; letter-spacing: -.055em; }
+    .section-head p { margin: 0; color: var(--muted); font-size: 14px; }
+    .syntax-panel { overflow: hidden; border: 1px solid var(--line); border-radius: 20px; background: white; box-shadow: var(--shadow); }
+    .syntax-top { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 15px 19px; border-bottom: 1px solid var(--line); }
+    .tabs { display: flex; gap: 5px; padding: 4px; border-radius: 11px; background: #f3f1f9; }
+    .tab { padding: 8px 13px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; font: inherit; font-size: 12px; font-weight: 800; cursor: pointer; }
+    .tab[aria-selected="true"] { color: white; background: var(--violet); box-shadow: 0 3px 10px rgba(81,65,191,.24); }
+    .copy-button { padding: 8px 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink-soft); background: white; font: inherit; font-size: 11px; font-weight: 750; cursor: pointer; }
+    .code-meta { display: flex; align-items: center; gap: 7px; color: #a09bb1; font: 11px/1.4 Consolas, monospace; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #77d7ae; }
+    pre { overflow: auto; margin: 0; padding: 27px 30px 31px; color: #f1efff; background: #211d38; font: 13px/1.85 Consolas, "Cascadia Code", monospace; tab-size: 4; }
+    pre code { font: inherit; }
+    .code-comment { color: #8d87aa; }
+    .code-key { color: #c7a6ff; }
+    .code-fn { color: #84ddc0; }
+    .code-num { color: #f4c17b; }
+    .syntax-caption { display: flex; align-items: center; gap: 9px; padding: 14px 20px; color: var(--ink-soft); background: #f9f8fc; font-size: 12px; }
+    .syntax-caption strong { color: var(--violet); }
+    .features { background: #f1eff9; }
+    .feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .feature { min-height: 180px; padding: 24px; border: 1px solid #e7e3f1; border-radius: 17px; background: rgba(255,255,255,.82); }
+    .feature-icon { display: grid; place-items: center; width: 38px; height: 38px; margin-bottom: 15px; border-radius: 12px; color: var(--violet); background: var(--lavender); font-size: 17px; font-weight: 900; }
+    .feature h3 { margin: 0 0 6px; font-size: 15px; }
+    .feature p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.8; }
+    .studio-grid { display: grid; grid-template-columns: .85fr 1.15fr; gap: 42px; align-items: center; }
+    .studio-copy p { color: var(--muted); font-size: 14px; }
+    .studio-copy ul { padding-left: 19px; color: var(--ink-soft); font-size: 13px; line-height: 2.1; }
+    .studio-preview { padding: 17px; border: 1px solid #38324f; border-radius: 18px; background: #211d38; box-shadow: var(--shadow); }
+    .preview-bar { display: flex; align-items: center; gap: 6px; padding: 1px 2px 14px; color: #aaa4c8; font-size: 10px; }
+    .preview-bar i { width: 7px; height: 7px; border-radius: 50%; background: #f28e9a; }
+    .preview-bar i:nth-child(2) { background: #edca73; }
+    .preview-bar i:nth-child(3) { margin-right: 7px; background: #7bd5a4; }
+    .preview-body { display: grid; grid-template-columns: 1fr 155px; min-height: 190px; overflow: hidden; border: 1px solid #39334f; border-radius: 11px; }
+    .preview-stage { display: grid; place-items: center; color: #807a9c; background: #191629; font-size: 12px; }
+    .preview-inspector { padding: 13px; border-left: 1px solid #39334f; color: #dcd8f0; background: #28233f; font-size: 10px; }
+    .preview-inspector strong { display: block; margin-bottom: 10px; color: var(--mint); font-size: 11px; }
+    .fake-input { margin-top: 5px; padding: 6px 8px; border: 1px solid #494263; border-radius: 6px; color: #fff; background: #1d1a30; font: 10px Consolas, monospace; }
+    .start { color: white; background: linear-gradient(130deg, #211b42, #382c78); }
+    .start .section-head p { color: #c2bddb; }
+    .start .section-kicker { color: var(--mint); }
+    .start-grid { display: grid; grid-template-columns: .8fr 1.2fr; gap: 30px; align-items: start; }
+    .start-note { padding: 22px; border: 1px solid rgba(255,255,255,.15); border-radius: 15px; color: #d0cbe5; background: rgba(255,255,255,.06); font-size: 13px; }
+    .start-note strong { display: block; margin-bottom: 7px; color: white; }
+    .start pre { border: 1px solid #49416a; border-radius: 15px; background: #17142b; }
+    .examples { display: grid; grid-template-columns: repeat(3,1fr); gap: 13px; }
+    .example { display: block; padding: 19px; border: 1px solid var(--line); border-radius: 14px; background: white; transition: transform .18s, box-shadow .18s; }
+    .example:hover { transform: translateY(-3px); box-shadow: 0 12px 32px rgba(35,26,86,.08); }
+    .example span { color: var(--violet); font-size: 10px; font-weight: 850; letter-spacing: .1em; }
+    .example h3 { margin: 5px 0 3px; font-size: 14px; }
+    .example p { margin: 0; color: var(--muted); font-size: 11px; }
+    .haerye { padding-top: 0; }
+    .haerye-card { display: flex; justify-content: space-between; align-items: center; gap: 28px; padding: 30px 34px; border: 1px solid #ded9f4; border-radius: 19px; background: linear-gradient(110deg, #efedff, #fff); }
+    .haerye-card p { max-width: 610px; margin: 5px 0 0; color: var(--muted); font-size: 13px; }
+    footer { padding: 32px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+    .footer-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+    .footer-brand { color: var(--ink); font-weight: 850; letter-spacing: .12em; }
+    @media (max-width: 800px) {
+      .hero-grid, .studio-grid, .start-grid { grid-template-columns: 1fr; }
+      .hero-grid { gap: 37px; }
+      .hero { padding: 57px 0 66px; }
+      .hero-art { max-width: 600px; margin: 0 auto; }
+      .feature-grid { grid-template-columns: repeat(2,1fr); }
+      .studio-grid { gap: 25px; }
+      nav { gap: 16px; }
+    }
+    @media (max-width: 560px) {
+      .wrap { width: min(100% - 32px, 460px); }
+      .topbar { height: 66px; }
+      nav { display: none; }
+      .github-link { padding: 8px 11px; font-size: 11px; }
+      .hero { padding: 47px 0 55px; }
+      h1 { font-size: 42px; }
+      .hero-copy { font-size: 14px; }
+      main section { padding: 67px 0; }
+      .feature-grid, .examples { grid-template-columns: 1fr; }
+      .feature { min-height: auto; }
+      .syntax-top { align-items: flex-start; flex-direction: column; }
+      .tabs { width: 100%; }
+      .tab { flex: 1; }
+      pre { padding: 20px 17px; font-size: 11px; }
+      .preview-body { grid-template-columns: 1fr 130px; }
+      .haerye-card, .footer-row { align-items: flex-start; flex-direction: column; }
+      .haerye-card { padding: 24px; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { transition-duration: .01ms !important; } }
+  </style>
+</head>
+<body>
+  <header class="wrap topbar">
+    <a class="brand" href="#top" aria-label="Samat 첫 화면">
+      <span class="brand-mark" aria-hidden="true">사</span>
+      <span>SAMAT<small>PROGRAMMING LANGUAGE</small></span>
+    </a>
+    <nav aria-label="주요 메뉴">
+      <a href="#language">언어</a><a href="#studio">스튜디오</a><a href="#examples">예제</a><a href="#start">시작하기</a>
+    </nav>
+    <a class="github-link" href="https://github.com/Blucy1004/Samat" target="_blank" rel="noreferrer">GitHub ↗</a>
+  </header>
+
+  <section class="hero" id="top">
+    <div class="wrap hero-grid">
+      <div>
+        <div class="eyebrow">Hangeul × Computing</div>
+        <h1>사람의 뜻이<br>CPU에 <span>사맛게</span> 하노라.</h1>
+        <p class="hero-copy">Samat은 쉬운 표현과 강력한 실행 성능을 함께 목표로 하는 프로그래밍 언어입니다. 익숙한 Code Syntax와 한국어 문법 訓C正音이 하나의 AST와 실행 체계를 공유합니다.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#language">언어 둘러보기 <span aria-hidden="true">↓</span></a>
+          <a class="button button-ghost" href="https://github.com/Blucy1004/Samat" target="_blank" rel="noreferrer">소스 코드 보기 <span aria-hidden="true">↗</span></a>
+        </div>
+        <div class="hero-notes"><span>하나의 AST</span><span>하나의 Runtime</span><span>.st 소스 파일</span></div>
+      </div>
+      <figure class="hero-art">
+        <img src="images/samat-language-banner.png" alt="보랏빛 바탕에 Samat 코드와 사맛 문구를 담은 배너">
+        <figcaption class="art-tag">Samat v1.0 · Code Syntax / 訓C正音</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <main>
+    <section id="language">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="section-kicker">ONE AST · ONE RUNTIME</div>
+          <h2>표현은 달라도, 실행 체계는 하나</h2>
+          <p>같은 함수와 계산을 두 문법으로 작성할 수 있습니다. 탭을 눌러 나란히 살펴보세요.</p>
+        </div>
+        <div class="syntax-panel">
+          <div class="syntax-top">
+            <div class="tabs" role="tablist" aria-label="Samat 문법 선택">
+              <button class="tab" id="tab-code" role="tab" aria-selected="true" aria-controls="code-code" data-surface="code">Code Syntax</button>
+              <button class="tab" id="tab-korean" role="tab" aria-selected="false" aria-controls="code-korean" data-surface="korean" tabindex="-1">訓C正音</button>
+            </div>
+            <div class="code-meta"><span class="dot"></span> 실행 가능한 Samat 예제 <button class="copy-button" type="button" id="copy-code">코드 복사</button></div>
+          </div>
+          <pre id="code-code" role="tabpanel" aria-labelledby="tab-code"><code>import jm.math
+
+fn sumEven(limit: Int) -> Int:
+    let total = 0
+    for number in 1..limit:
+        if number % 2 == 0:
+            total += number
+    return total
+
+let evenTotal = sumEven(10)
+let root = sqrt(81.0)
+print("짝수 합:", evenTotal, "제곱근:", root)</code></pre>
+          <pre id="code-korean" role="tabpanel" aria-labelledby="tab-korean" hidden><code>모듈 jm.math를 가져온다.
+
+함수 sumEven(limit: Int) -> Int:
+    정수 변수 total을 0으로 정한다.
+    1부터 limit까지 number를 반복하며:
+        number % 2 == 0 라면:
+            total를 total + number로 정한다.
+    total를 반환한다.
+
+정수 변수 evenTotal을 sumEven(10)으로 정한다.
+실수 변수 root를 sqrt(81.0)으로 정한다.
+함수 print("짝수 합:", evenTotal, "제곱근:", root)를 실행한다.</code></pre>
+          <div class="syntax-caption"><strong>같은 기능, 같은 AST.</strong> Code Syntax와 訓C正音은 서로 다른 표면 문법으로 같은 Samat 프로그램을 표현합니다.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="features" aria-labelledby="features-title">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="section-kicker">BUILT FOR EXPRESSION</div>
+          <h2 id="features-title">사맛의 주요 구성</h2>
+          <p>언어, 실행기, 편집기, 해례 문법이 함께 자랍니다.</p>
+        </div>
+        <div class="feature-grid">
+          <article class="feature"><div class="feature-icon" aria-hidden="true">ㄱ</div><h3>두 가지 문법</h3><p>Code Syntax와 訓C正音을 하나의 AST와 런타임으로 실행합니다.</p></article>
+          <article class="feature"><div class="feature-icon" aria-hidden="true">ƒ</div><h3>인터프리터와 네이티브</h3><p>인터프리터로 실행하고, 지원되는 함수는 네이티브 백엔드로 컴파일할 수 있습니다.</p></article>
+          <article class="feature"><div class="feature-icon" aria-hidden="true">{ }</div><h3>표현력 있는 기본 문법</h3><p>함수, 타입, 조건문, 반복문과 컬렉션을 지원합니다.</p></article>
+          <article class="feature"><div class="feature-icon" aria-hidden="true">.hy</div><h3>訓C正音 해례</h3><p>장면을 선언형으로 표현하는 Haerye 파일을 파싱하고 검증합니다.</p></article>
+          <article class="feature"><div class="feature-icon" aria-hidden="true">⌘</div><h3>Samat Studio</h3><p>예제를 탐색하고 코드를 편집·검사·실행하며 런타임 변수를 조절합니다.</p></article>
+          <article class="feature"><div class="feature-icon" aria-hidden="true">↗</div><h3>Windows와 Linux</h3><p>CMake와 C++20 컴파일러로 빌드할 수 있습니다. LLVM은 선택 사항입니다.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="studio">
+      <div class="wrap studio-grid">
+        <div class="studio-copy">
+          <div class="section-kicker">SAMAT STUDIO</div>
+          <h2>코드를 쓰고,<br>실행을 살펴보세요.</h2>
+          <p>Samat Studio는 코드 편집 화면과 런타임 변수 화면을 오가며 프로그램을 살펴볼 수 있는 Windows용 작업 공간입니다.</p>
+          <ul><li>범주별 예제 탐색과 검색</li><li>문법 강조, 찾기·바꾸기, 문법 전환</li><li>전역 기본형 변수의 초기값 조절</li></ul>
+          <a class="text-link" href="https://github.com/Blucy1004/Samat/tree/main/src/Samat/Studio" target="_blank" rel="noreferrer">Studio 소스 보기 ↗</a>
+        </div>
+        <div class="studio-preview" aria-label="코드가 없는 무대 영역과 변수 조절 패널을 보여주는 Samat Studio 개념도">
+          <div class="preview-bar"><i></i><i></i><i></i> SAMAT STUDIO · RUNTIME</div>
+          <div class="preview-body">
+            <div class="preview-stage">실행 결과를 살펴보는 화면</div>
+            <div class="preview-inspector"><strong>변수 조절</strong>paddleSpeed<div class="fake-input">8.0</div>ballSpeed<div class="fake-input">6.0</div>leftScore<div class="fake-input">0</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="start" id="start">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="section-kicker">GET STARTED</div>
+          <h2>직접 실행해 보기</h2>
+          <p>저장소를 내려받고 Samat을 빌드한 다음 `.st` 파일을 실행하세요.</p>
+        </div>
+        <div class="start-grid">
+          <div class="start-note"><strong>필요한 도구</strong>CMake 3.24 이상과 C++20 컴파일러가 필요합니다. Windows에서는 Visual Studio 2022, Linux에서는 GCC 또는 Clang을 사용할 수 있습니다.<br><br>완성된 예제는 저장소의 <code>examples/Samat/v1.0</code>에서 확인하세요.</div>
+          <pre><code><span class="code-comment"># Windows PowerShell</span>
+cmake -S . -B build -A x64
+cmake --build build --config Release
+.\build\Release\Samat.exe run .\examples\Samat\v1.0\hello.st
+
+<span class="code-comment"># Linux</span>
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+./build/Samat run examples/Samat/v1.0/hello.st</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="examples">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="section-kicker">LEARN BY EXAMPLE</div>
+          <h2>예제에서 시작하기</h2>
+          <p>작은 프로그램을 열어 문법을 직접 읽고 실행해 보세요.</p>
+        </div>
+        <div class="examples">
+          <a class="example" href="https://github.com/Blucy1004/Samat/blob/main/examples/Samat/v1.0/hello.st"><span>FIRST STEPS</span><h3>Hello, Samat</h3><p>첫 문장을 출력하는 가장 작은 예제</p></a>
+          <a class="example" href="https://github.com/Blucy1004/Samat/blob/main/examples/Samat/v1.0/functions.st"><span>FUNCTIONS</span><h3>함수와 계산</h3><p>재귀 함수로 팩토리얼 계산</p></a>
+          <a class="example" href="https://github.com/Blucy1004/Samat/blob/main/examples/Samat/v1.0/conditions-loops.st"><span>CONTROL FLOW</span><h3>조건과 반복</h3><p>조건문과 범위 반복문 사용하기</p></a>
+          <a class="example" href="https://github.com/Blucy1004/Samat/blob/main/examples/Samat/v1.0/functions-korean.st"><span>訓C正音</span><h3>한국어 문법</h3><p>같은 함수 기능을 한국어로 표현</p></a>
+          <a class="example" href="https://github.com/Blucy1004/Samat/blob/main/examples/Samat/v1.0/calculator.st"><span>CONSOLE</span><h3>대화형 계산기</h3><p>입력과 사칙 연산을 활용하는 예제</p></a>
+          <a class="example" href="https://github.com/Blucy1004/Samat/blob/main/main.st"><span>LANGUAGE TOUR</span><h3>프로젝트 예제</h3><p>저장소 루트의 `main.st` 둘러보기</p></a>
+        </div>
+      </div>
+    </section>
+
+    <section class="haerye">
+      <div class="wrap haerye-card">
+        <div><div class="section-kicker">訓C正音 · HAERYE</div><h2>장면을 선언하는 문법</h2><p>Haerye `.hy` 파일은 장면 정보를 표현하고, Samat CLI의 `haerye validate`와 `haerye format` 명령으로 검사하고 정리할 수 있습니다.</p></div>
+        <a class="button button-ghost" style="color:var(--ink);border-color:var(--line);background:white" href="https://github.com/Blucy1004/Samat/blob/main/examples/Haerye/pong.hy">Pong 해례 보기 ↗</a>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap footer-row"><div><span class="footer-brand">SAMAT</span><br>사람의 뜻이 CPU에 사맛게 하노라.</div><div>세종대왕님, 정의공주님, 문종대왕님, 집현전의 학자들, 그리고 한글을 지켜 온 모든 분들께 감사드립니다.</div><a href="https://github.com/Blucy1004/Samat">MIT License · GitHub ↗</a></div>
+  </footer>
+  <script>
+    (() => {
+      const tabs = [...document.querySelectorAll('[data-surface]')];
+      const panels = { code: document.getElementById('code-code'), korean: document.getElementById('code-korean') };
+      let active = 'code';
+      const select = (surface) => {
+        active = surface;
+        for (const tab of tabs) {
+          const selected = tab.dataset.surface === surface;
+          tab.setAttribute('aria-selected', String(selected));
+          tab.tabIndex = selected ? 0 : -1;
+        }
+        for (const [key, panel] of Object.entries(panels)) panel.hidden = key !== surface;
+      };
+      for (const [index, tab] of tabs.entries()) {
+        tab.addEventListener('click', () => select(tab.dataset.surface));
+        tab.addEventListener('keydown', (event) => {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+          event.preventDefault();
+          const next = (index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
+          select(tabs[next].dataset.surface);
+          tabs[next].focus();
+        });
+      }
+      document.getElementById('copy-code').addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        const text = panels[active].innerText;
+        try {
+          await navigator.clipboard.writeText(text);
+          button.textContent = '복사 완료';
+        } catch {
+          button.textContent = '복사할 수 없음';
+        }
+        window.setTimeout(() => { button.textContent = '코드 복사'; }, 1500);
+      });
+    })();
+  </script>
+</body>
+</html>
