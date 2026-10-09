@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="480" viewBox="0 0 1280 480" role="img" aria-labelledby="title desc">
+  <title id="title">Samat — 사람의 뜻이 CPU에 사맛게 하노라</title>
+  <desc id="desc">따뜻한 한지 바탕에 붓글씨 느낌의 사맛 제목과 현대적인 Samat 코드 창을 담은 배너</desc>
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f5edda"/><stop offset="0.52" stop-color="#eee2c5"/><stop offset="1" stop-color="#e3d2ad"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="0.8" y2="1"><stop offset="0" stop-color="#172c29"/><stop offset="1" stop-color="#29463c"/></linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1b302b"/><stop offset="1" stop-color="#10211f"/></linearGradient>
+    <filter id="fibers" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.72" numOctaves="2" seed="18"/>
+      <feColorMatrix values="0.55 0 0 0 0.75  0 0.48 0 0 0.67  0 0 0.35 0 0.48  0 0 0 0.15 0"/>
+    </filter>
+    <filter id="brush" x="-8%" y="-12%" width="116%" height="130%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="2" seed="9" result="grain"/>
+      <feDisplacementMap in="SourceGraphic" in2="grain" scale="1.25" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <pattern id="threads" width="94" height="72" patternUnits="userSpaceOnUse">
+      <path d="M5 17c21-3 44 5 82 1M-9 52c31 5 54-4 101 0" fill="none" stroke="#8f7852" stroke-width=".7" opacity=".12"/>
+      <path d="M24-5c-3 16 2 35 0 82M72-8c2 23-4 48-1 89" fill="none" stroke="#fff9e9" stroke-width="1" opacity=".18"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="480" rx="24" fill="url(#paper)"/>
+  <rect width="1280" height="480" rx="24" filter="url(#fibers)" opacity=".46"/>
+  <rect width="1280" height="480" rx="24" fill="url(#threads)"/>
+  <rect x="18" y="18" width="1244" height="444" rx="18" fill="none" stroke="#94784e" stroke-width="1.5" opacity=".42"/>
+  <path d="M74 74h42M74 74v42M1206 74h-42M1206 74v42M74 406h42M74 406v-42M1206 406h-42M1206 406v-42" fill="none" stroke="#9b4835" stroke-width="2" opacity=".72"/>
+  <text x="86" y="111" fill="#6e654e" font-family="Georgia, 'Noto Serif KR', serif" font-size="15" letter-spacing="5">S A M A T  /  訓 C 正 音</text>
+  <text x="86" y="151" fill="#867958" font-family="Arial, sans-serif" font-size="12" letter-spacing="3">A KOREAN PROGRAMMING LANGUAGE</text>
+  <path d="M89 191c35-17 48-22 79-19 24 3 37-4 57-12 16-7 31-2 48 1" fill="none" stroke="#a94e37" stroke-width="4" stroke-linecap="round" opacity=".78"/>
+  <text x="78" y="285" fill="url(#ink)" font-family="'Nanum Brush Script', 'Noto Serif KR', 'Batang', serif" font-size="128" font-weight="700" letter-spacing="3" filter="url(#brush)">사맛</text>
+  <text x="88" y="333" fill="#37493e" font-family="'Noto Serif KR', 'Batang', serif" font-size="23">사람의 뜻이 CPU에 사맛게 하노라.</text>
+  <path d="M88 356h420" stroke="#8c744b" stroke-width="1" opacity=".55"/>
+  <text x="88" y="386" fill="#6b614b" font-family="Georgia, 'Noto Serif KR', serif" font-size="15" letter-spacing="1.5">훈민정음의 정신을, 오늘의 컴퓨팅으로</text>
+  <g transform="translate(516 344) rotate(-8)">
+    <rect width="58" height="58" rx="3" fill="#a64636"/><rect x="5" y="5" width="48" height="48" fill="none" stroke="#edcdb0" stroke-width="1" opacity=".72"/>
+    <text x="29" y="39" text-anchor="middle" fill="#f3dfc3" font-family="'Noto Serif KR', 'Batang', serif" font-size="24" font-weight="700">正音</text>
+  </g>
+  <rect x="642" y="68" width="558" height="344" rx="15" fill="#bba983" opacity=".2"/>
+  <rect x="634" y="60" width="558" height="344" rx="15" fill="url(#panel)" stroke="#51675a" stroke-width="1.2"/>
+  <path d="M649 60h528a15 15 0 0 1 15 15v38H634V75a15 15 0 0 1 15-15z" fill="#263a34"/>
+  <circle cx="660" cy="87" r="5" fill="#bc6c58"/><circle cx="678" cy="87" r="5" fill="#d1ac62"/><circle cx="696" cy="87" r="5" fill="#6f9e79"/>
+  <text x="725" y="92" fill="#c2c9b5" font-family="Consolas, 'Cascadia Mono', monospace" font-size="14">main.st</text>
+  <text x="1132" y="92" text-anchor="end" fill="#87aa91" font-family="Consolas, 'Cascadia Mono', monospace" font-size="12">SAMAT v1.0</text>
+  <text x="674" y="157" fill="#c7a96f" font-family="Consolas, 'Cascadia Mono', monospace" font-size="18">fn</text>
+  <text x="699" y="157" fill="#f0e5c9" font-family="Consolas, 'Cascadia Mono', monospace" font-size="18">main() -&gt; Int:</text>
+  <text x="674" y="197" fill="#92b79c" font-family="Consolas, 'Cascadia Mono', monospace" font-size="17">    let</text>
+  <text x="724" y="197" fill="#d7dfd0" font-family="Consolas, 'Cascadia Mono', monospace" font-size="17">meaning = </text>
+  <text x="839" y="197" fill="#d7b878" font-family="Consolas, 'Cascadia Mono', monospace" font-size="17">"사람의 뜻"</text>
+  <text x="674" y="237" fill="#92b79c" font-family="Consolas, 'Cascadia Mono', monospace" font-size="17">    print</text>
+  <text x="759" y="237" fill="#d7dfd0" font-family="Consolas, 'Cascadia Mono', monospace" font-size="17">(meaning)</text>
+  <text x="674" y="277" fill="#92b79c" font-family="Consolas, 'Cascadia Mono', monospace" font-size="17">    return</text>
+  <text x="770" y="277" fill="#d7dfd0" font-family="Consolas, 'Cascadia Mono', monospace" font-size="17">42</text>
+  <path d="M674 303h470" stroke="#52665c" stroke-width="1" opacity=".7"/>
+  <text x="674" y="337" fill="#82988a" font-family="Consolas, 'Cascadia Mono', monospace" font-size="13">Code Syntax  /  訓C正音</text>
+  <text x="674" y="372" fill="#d1b66e" font-family="Georgia, serif" font-size="13" letter-spacing="2">ONE AST  ·  ONE RUNTIME</text>
+  <text x="88" y="438" fill="#867958" font-family="Consolas, 'Cascadia Mono', monospace" font-size="12" letter-spacing="1.5">2026.10.09  ·  O-SI  ·  HANGEUL DAY</text>
+  <text x="1192" y="438" text-anchor="end" fill="#867958" font-family="Consolas, 'Cascadia Mono', monospace" font-size="12" letter-spacing="1.5">새로운 글, 오래된 뜻</text>
+</svg>
