@@ -34,8 +34,8 @@ entry:
 ```powershell
 Samat.exe check main.st
 Samat.exe run main.st
-Samat.exe --ir examples/Samat/archive/native-factorial.st
-Samat.exe --native main examples/Samat/archive/native-factorial.st
+Samat.exe --ir examples/Samat/v1.0/native-factorial.st
+Samat.exe --native main examples/Samat/v1.0/native-factorial.st
 ```
 
 `check`는 파싱과 타입 검사를 수행하고, `run`은 인터프리터로 실행합니다. `--ir`는 Samat IR을 출력하며 `--native`는 사용 가능한 네이티브 백엔드로 실행합니다. 명령줄 인자는 `Samat --help`에 설명되어 있습니다.
