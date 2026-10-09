@@ -1,13 +1,3 @@
-<p align="center">
-  <img src="assets/samat-hanji-banner.svg" alt="Samat — 한지 위의 붓글씨와 현대적인 Samat 코드" width="100%">
-</p>
-
-<p align="center">
-  <strong>한글날 100주년 반포 · 2026년 10월 9일 정오(正午)</strong>
-</p>
-
----
-
 # Samat
 
 한글날 100주년을 맞아 2026년 10월 9일, 정오(正午)에 반포하는 사맛은, 옛날 훈민정음의 창제 정신을 580년이 지난 지금, 컴퓨팅의 영역으로 이어가는 언어입니다.
