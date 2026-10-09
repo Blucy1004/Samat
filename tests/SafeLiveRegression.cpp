@@ -1,8 +1,5 @@
-#include "JMEngine/Script/JMIR.hpp"
-#include "JMEngine/Script/RuntimeABI.h"
-#if JMENGINE_HAS_ENGINE
-#include "JMEngine/Script/EngineScriptAPI.hpp"
-#endif
+#include "Samat/Language/JMIR.hpp"
+#include "Samat/Language/RuntimeABI.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -56,15 +53,6 @@ void negative(const std::string &source, const std::string &code) {
             "Missing expected diagnostic " + code);
     ++checks;
 }
-std::string live(double speed, int force = 12) {
-    return "import jm.game\nlet speed: Float = " + std::to_string(speed) +
-           "\nlet health: Int = 100\nlet presses: Int = 0\nlet extra: String = "
-           "scene.createSprite(\"Extra\")\nfn jump() -> Void:\n "
-           "   player.jump(force: " +
-           std::to_string(force) +
-           ")\non start:\n    health = 37\non update:\n    player.position += Vector2(speed * time.delta, "
-           "0.0)\non key.space.pressed:\n    presses += 1\n    jump()\n";
-}
 void coreLive() {
     auto initial = parse(
         "let health: Int = 100\nlet speed: Int = 8\nfn main() -> Int:\n    health -= 1\n    return speed\n");
@@ -88,188 +76,6 @@ void coreLive() {
     require(session.generation() == 102, "100 core swaps");
     ++checks;
 }
-#if JMENGINE_HAS_ENGINE
-void engineLive() {
-    for (auto backend : {jm::EngineScriptBackend::Interpreter, jm::EngineScriptBackend::LLVM}) {
-        if (backend == jm::EngineScriptBackend::LLVM && !LLVMBackend::available()) {
-            ++unavailable;
-            continue;
-        }
-        jm::Scene scene;
-        auto id = scene.objects()[1].id;
-        auto before = scene.objects()[1].position.x;
-        auto objectCount = scene.objects().size();
-        jm::EngineEventRuntime runtime(scene, id, parse(live(8)), backend);
-        runtime.start();
-        runtime.tick({}, 0.25);
-        Diagnostic diagnostic;
-        require(runtime.hotSwap(parse(live(15, 20)), diagnostic), diagnostic.message);
-        runtime.tick({}, 0.25);
-        require(std::abs(scene.objects()[1].position.x - before - 5.75) < 1e-5, "Live speed 8 -> 15");
-        require(runtime.inspect().at("health") == "Int: 37", "Health preserved across live swap");
-        scene.objects()[1].grounded = true;
-        jm::ScriptInput input;
-        input.spacePressed = true;
-        runtime.tick(input, 0);
-        require(scene.objects()[1].verticalVelocity == 20, "New jump body/event installed");
-        auto invalid = parse(live(15));
-        invalid.statements[1].declaredType = Type::String;
-        require(!runtime.hotSwap(invalid, diagnostic), "Invalid candidate replaced valid program");
-        scene.objects()[1].grounded = true;
-        runtime.tick(input, 0);
-        require(scene.objects()[1].verticalVelocity == 20, "Previous valid generation lost");
-        auto readyCandidate = parse(live(15, 20));
-        auto begin = std::chrono::steady_clock::now();
-        for (int i = 0; i < 100; ++i)
-            require(runtime.hotSwap(readyCandidate, diagnostic), diagnostic.message);
-        std::cout
-            << "Debug hot swap mean (validation/compile/state transfer/swap): "
-            << (backend == jm::EngineScriptBackend::LLVM ? "LLVM" : "Interpreter") << " "
-            << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count() /
-                   100
-            << " ms\n";
-        scene.objects()[1].grounded = true;
-        runtime.tick(input, 0);
-        require(scene.objects()[1].verticalVelocity == 20, "Repeated event replacement");
-        require(runtime.inspect().at("health") == "Int: 37", "100 swaps preserve globals");
-        require(scene.objects().size() == objectCount + 1, "Hot reload repeated module initialization");
-        require(runtime.inspect().at("presses") == "Int: 3", "Duplicate event handlers accumulated");
-        ++checks;
-    }
-}
-void metadata() {
-    auto registry = jm::engineNativeFunctions();
-    auto jump = registry.metadata(stableBuiltinSymbolId("builtin.player.jump"));
-    require(jump && metadataMatches(*jump, "ㅈㅍ"), "Hangul initial search");
-    require(jump && metadataMatches(*jump, "JUMP"), "Case-insensitive ASCII metadata search");
-    require(metadataSignature(*jump).find("force: Int") != std::string::npos, "Metadata signature");
-    for (const auto &entry : registry.allMetadata()) {
-        auto code = metadataTemplate(entry);
-        if (code.empty())
-            continue;
-        auto program = parse(code);
-        Diagnostic diagnostic;
-        Program korean;
-        require(parseKorean(metadataTemplate(entry, true), korean, diagnostic) &&
-                    structurallyEqual(program, korean),
-                "Metadata template parity");
-    }
-    Diagnostic diagnostic;
-    Program beginner;
-    require(parseKorean("시작할 때:\n    \"enemy\"를 enemy로 찾았다면:\n        enemy.position을 "
-                        "Vector2(1.0, 0.0)만큼 늘린다.\n",
-                        beginner, diagnostic),
-            diagnostic.message);
-    auto advanced = parse("on start:\n    let enemy: Entity? = scene.find(\"enemy\")\n    if enemy != "
-                          "null:\n        enemy.position += Vector2(1.0, 0.0)\n");
-    require(structurallyEqual(beginner, advanced), "Beginner lookup uses different AST");
-    ++checks;
-    for (const auto &[source, expected] : std::vector<std::pair<std::string, std::string>>{
-             {"on start:\n    let enemy = scene.find(\"Player\")\n    enemy.destroy()\n", "JM2011"},
-             {"on start:\n    let enemy = scene.find(42)\n", "JM2003"},
-             {"on start:\n    let enemy: Entity? = scene.find(\"Player\")\n    if enemy != null:\n        "
-              "enemy.setPosition(42)\n",
-              "JM2003"}}) {
-        Program unsafe;
-        std::vector<Diagnostic> errors;
-        require(parseCode(source, unsafe, diagnostic), diagnostic.message);
-        require(!check(unsafe, errors, &registry) &&
-                    std::any_of(errors.begin(), errors.end(),
-                                [&](const auto &error) { return error.code == expected; }),
-                "Registry-derived engine type diagnostic: " + expected);
-        ++checks;
-    }
-}
-void entitySafety() {
-    auto program =
-        parse("import jm.game\nfn main() -> Int:\n    let enemy: Entity? = scene.find(\"Player\")\n    if "
-              "enemy != null:\n        enemy.position += Vector2(1.0, 0.0)\n        enemy.destroy()\n    let "
-              "missing: Entity? = scene.find(\"Player\")\n    missing?.destroy()\n    if missing == null:\n  "
-              "      return 42\n    return 0\n");
-    for (auto backend : {jm::EngineScriptBackend::Interpreter, jm::EngineScriptBackend::LLVM}) {
-        if (backend == jm::EngineScriptBackend::LLVM && !LLVMBackend::available()) {
-            ++unavailable;
-            continue;
-        }
-        jm::Scene scene;
-        auto count = scene.objects().size();
-        jm::EngineScriptContext context{scene, scene.objects()[1].id};
-        auto host = jm::engineHostFunctions(context);
-        auto handle = host("builtin.scene.find", {Value("Player")}, {}).unwrap();
-        jm::Scene copied = scene;
-        jm::EngineScriptContext copiedContext{copied, copied.objects()[1].id};
-        bool wrongScene = false;
-        try {
-            jm::engineHostFunctions(copiedContext)("builtin.entity.position", {handle}, {});
-        } catch (const std::exception &error) {
-            wrongScene = std::string(error.what()).find("JM7102") != std::string::npos;
-        }
-        require(wrongScene, "Copied Scene accepted original Entity handle");
-        RunOptions options;
-        options.entryFunction = "main";
-        options.moduleResolver = jm::engineModuleResolver();
-        if (backend == jm::EngineScriptBackend::Interpreter)
-            require(execute(program, options, host).returnValue.toString() == "42",
-                    "Entity Interpreter execution");
-        else {
-            auto registry = jm::engineNativeFunctions();
-            Module module;
-            LoweringDiagnostic diagnostic;
-            require(lower(program, module, diagnostic, &registry), diagnostic.message);
-            jm::EngineScriptScope scope(context);
-            auto code = LLVMBackend{}.compile(module, registry);
-            require(code.invoke("main") == 42, "Entity LLVM execution");
-        }
-        require(scene.objects().size() == count - 1, "Entity destroy did not change Scene");
-        bool stale = false;
-        try {
-            host("builtin.entity.position", {handle}, {});
-        } catch (const std::exception &error) {
-            stale = std::string(error.what()).find("JM7102") != std::string::npos;
-        }
-        require(stale, "Destroyed Entity access did not fail safely");
-        auto &replacement = scene.create(jm::ObjectKind::Sprite2D);
-        replacement.id = std::get<EntityReference>(handle.data).id;
-        replacement.name = "Player";
-        stale = false;
-        try {
-            host("builtin.entity.position", {handle}, {});
-        } catch (const std::exception &) {
-            stale = true;
-        }
-        require(stale, "ID reuse resurrected stale handle");
-        auto fresh = host("builtin.scene.find", {Value("Player")}, {}).unwrap();
-        scene.replaceObjects(scene.objects());
-        stale = false;
-        try {
-            host("builtin.entity.position", {fresh}, {});
-        } catch (const std::exception &) {
-            stale = true;
-        }
-        require(stale, "Scene reset did not invalidate handles");
-        ++checks;
-    }
-}
-void boundedInspection() {
-    std::string source;
-    for (int i = 0; i < 80; ++i)
-        source += "let text" + std::to_string(i) + ": String = \"snapshot\"\n";
-    auto program = parse(source);
-    for (auto backend : {jm::EngineScriptBackend::Interpreter, jm::EngineScriptBackend::LLVM}) {
-        if (backend == jm::EngineScriptBackend::LLVM && !LLVMBackend::available()) {
-            ++unavailable;
-            continue;
-        }
-        jm::Scene scene;
-        jm::EngineEventRuntime runtime(scene, scene.objects()[1].id, program, backend);
-        runtime.start();
-        auto snapshot = runtime.inspect();
-        require(snapshot.size() == 67 && snapshot.contains("player.position"),
-                "Inspection must bound String globals to 64 rows plus three player values");
-        ++checks;
-    }
-}
-#endif
 } // namespace
 int main() {
     try {
@@ -414,12 +220,6 @@ int main() {
                "touches\n",
                42);
         coreLive();
-#if JMENGINE_HAS_ENGINE
-        metadata();
-        engineLive();
-        entitySafety();
-        boundedInspection();
-#endif
         std::cout << "Safe & Live regression: " << checks << " checks PASS, " << unavailable
                   << " unavailable backend groups\n";
     } catch (const std::exception &error) {

@@ -2,13 +2,13 @@
 
 > 사람의 뜻이 CPU에 사맛게 하노라.
 
-Samat is a programming language developed for JM Engine. It aims to pair approachable syntax with fast execution.
+Samat은 읽기 쉬운 표현과 빠른 실행을 함께 목표로 하는 프로그래밍 언어입니다.
 
-**Samat Code Syntax (`.st`) and 訓C正音 share one parser, AST, type checker, and runtime.** Haerye (`.hy`) is the companion format for describing scenes. The language and the engine are separate parts of the same toolchain.
+Samat Code Syntax(`.st`)와 訓C正音은 같은 파서, AST, 타입 검사기, 실행 체계를 공유합니다. 해례(`.hy`)는 장면을 기술하는 선언형 형식이며, Samat과 함께 독립적으로 파싱하고 검증할 수 있습니다.
 
-## Try Samat
+## 빠르게 시작하기
 
-The repository includes [a short Samat introduction and interactive calculator](main.st). Run it and enter one value per line:
+저장소 루트의 [main.st](main.st)는 Samat 소개와 대화형 계산기를 담은 실행 예제입니다. 실행하면 첫 번째 숫자, 연산자, 두 번째 숫자를 순서대로 입력합니다.
 
 ```text
 7
@@ -16,45 +16,31 @@ The repository includes [a short Samat introduction and interactive calculator](
 7
 ```
 
-### Build the command-line runner
+## 빌드
 
-Requirements: CMake 3.24+, a C++20 compiler, and Git. The engine build fetches SDL3, Dear ImGui, and nlohmann/json on first configure. LLVM is optional.
+필요한 도구는 CMake 3.24 이상과 C++20 컴파일러입니다. LLVM은 선택 사항이며, 켜려면 LLVM 17 이상이 설치되어 있어야 합니다.
 
-Windows PowerShell:
+### Windows PowerShell
 
 ```powershell
-cmake -S . -B build -A x64 -DJMENGINE_ENABLE_LLVM=OFF
+cmake -S . -B build -A x64 -DSAMAT_ENABLE_LLVM=OFF
 cmake --build build --config Release --parallel 2
 .\build\Release\Samat.exe check .\main.st
 .\build\Release\Samat.exe run .\main.st
 ```
 
-Linux or macOS:
+### Linux 또는 macOS
 
 ```sh
-cmake -S . -B build -DJMENGINE_ENABLE_LLVM=OFF
+cmake -S . -B build -DSAMAT_ENABLE_LLVM=OFF
 cmake --build build --parallel 2
 ./build/Samat check main.st
 ./build/Samat run main.st
 ```
 
-`run` starts the interpreter. For the calculator, provide the first number, operator, and second number on separate input lines. `check` parses and type-checks a program without running it. Use `Samat --help` to see the compiler, interpreter, and optional native commands.
+`check`는 프로그램을 실행하지 않고 구문과 타입을 검사합니다. `run`은 인터프리터로 실행합니다. 사용 가능한 명령은 `Samat --help`에서 확인할 수 있습니다.
 
-### Build Samat Studio
-
-Samat Studio is a Windows x64 application for editing `.st` code, opening `.hy` scenes, and running Samat against a scene in Game Preview.
-
-```powershell
-cmake -S . -B build -A x64 -DJMENGINE_BUILD_ENGINE=ON -DJMENGINE_BUILD_SANDBOX=ON -DJMENGINE_ENABLE_LLVM=OFF
-cmake --build build --config Release --parallel 2
-ctest --test-dir build -C Release --output-on-failure
-cmake --build build --target package --config Release
-.\build\Release\SamatStudio.exe
-```
-
-The portable archive is written to `build/SamatStudio-1.0.0-Windows-x64.zip`. Studio scene-property edits are currently previews and do not save back into the `.hy` file.
-
-## Language at a glance
+## 언어 예제
 
 ```samat
 fn factorial(n: Int) -> Int:
@@ -69,42 +55,40 @@ fn main() -> Int:
     return factorial(5) + values[0]
 ```
 
-The v1.0 language includes:
+Samat v1.0에는 다음 기능이 포함됩니다.
 
-- `Int`, `Float`, `Bool`, `String`, `List`, `Map`, `Tuple`, `Struct`, and `Optional` values
-- Functions, named arguments, conditionals, loops, ranges, imports, and modules
-- String and collection methods, including `.isEmpty()` on strings and lists
-- Readable integer literals such as `1_000_000`, `0xFF`, and `0b1010`
-- Console input/output, math, random, time, and JM Engine APIs when hosted by the engine
-- An interpreter by default, an optional LLVM JIT/AOT backend, and a bootstrap x64 native backend for its supported subset
+- `Int`, `Float`, `Bool`, `String`, `List`, `Map`, `Tuple`, `Struct`, `Optional` 타입
+- 함수, 이름 있는 인자, 조건문, 반복문, 범위, 모듈과 가져오기
+- 문자열과 컬렉션 메서드. 문자열과 리스트의 `.isEmpty()` 포함
+- `1_000_000`, `0xFF`, `0b1010` 형태의 정수 표기
+- 콘솔 입출력, 수학, 난수, 시간 기능
+- 기본 인터프리터, 선택형 LLVM JIT/AOT 백엔드, 지원 범위 내의 x64 네이티브 백엔드
 
-The interpreted language and the optional native backends have different capability ranges. See [Samat Native Compilation](docs/Samat-Native-Compilation.md) before relying on a native-only feature.
+인터프리터와 네이티브 백엔드가 지원하는 기능 범위는 서로 다릅니다. 자세한 내용은 [네이티브 컴파일 안내](docs/Samat-Native-Compilation.md)를 참고하세요.
 
-## Samat Studio and Haerye
+## 해례
 
-Samat source controls behavior. Haerye scene files describe visual objects. Open a `.hy` scene and a `.st` source in Studio, then use Play to run the source in the scene preview. The standalone runner also works for programs that do not use a scene.
+해례 파일은 장면 이름, 배경색, 도형, 위치, 크기, 회전, 색상을 선언합니다. 현재 저장소에는 해례 파서와 검증기, 직렬화기, 예제 장면이 포함되어 있습니다.
 
-The included [Pong scene and Samat program](examples/Pong/) demonstrate the pair. The [Haerye v0.1 notes](docs/Haerye-v0.1.md) describe its current supported scene format.
+- [해례 형식 안내](docs/Haerye-v0.1.md)
+- [예제 장면](examples/Haerye/pong.hy)
 
-## Verification
-
-Run the complete automated suite with:
+## 테스트
 
 ```sh
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The suite covers Studio and engine smoke runs, LF/CRLF calculator input, Pong gameplay, Haerye parsing, shared Code/Korean AST round-trips, type-checking, interpreter behavior, runtime memory, and available native backends. LLVM-dependent cases are reported as unavailable when LLVM is disabled or absent.
+테스트는 Code Syntax와 訓C正音의 AST 일치, 파싱과 타입 검사, 인터프리터, 네이티브 백엔드, 런타임 메모리, `main.st`의 줄바꿈별 입력 동작, 해례 파싱·검증·직렬화를 확인합니다. LLVM을 사용할 수 없는 환경에서는 LLVM 전용 검사가 실행 불가로 표시됩니다.
 
-## Project map
+## 저장소 구성
 
-- `src/JMEngine/Script/` — Samat language, shared AST, type checker, interpreter, and native backends
-- `src/JMEngine/Core/` — Studio and engine integration
-- `src/JMEngine/Scene/` — Haerye and scene model
-- `src/ScriptCli/` — `Samat` command-line runner
-- `examples/Samat/v1.0/` — current language examples
-- `examples/Samat/archive/` — earlier milestone examples
-- `examples/Pong/` — paired `.hy` scene and `.st` behavior
-- `docs/` — language, backend, Studio, and scene-format documentation
+- `src/Samat/Language/` — 파서, AST, 타입 검사기, 인터프리터, 네이티브 백엔드
+- `src/Samat/` — 해례 파서와 호스트 앱용 언어 도구 지원
+- `src/Samat/CLI/` — `Samat` 명령줄 실행기
+- `examples/Samat/v1.0/` — Samat 언어 예제
+- `examples/Samat/archive/` — 이전 버전 예제
+- `examples/Haerye/` — 해례 장면 예제
+- `docs/` — 언어, 백엔드, 해례 문서
 
-Earlier milestones are kept as historical records; the current source extension is `.st` and the current command-line program is `Samat`.
+이전 버전 자료는 기록을 위해 보관합니다. 현재 Samat 소스 확장자는 `.st`입니다.

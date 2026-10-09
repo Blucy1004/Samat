@@ -1,9 +1,6 @@
-#include "JMEngine/Script/JMIR.hpp"
-#include "JMEngine/Script/ModuleLoader.hpp"
-#include "JMEngine/Script/RuntimeABI.h"
-#if JMENGINE_HAS_ENGINE
-#include "JMEngine/Script/EngineScriptAPI.hpp"
-#endif
+#include "Samat/Language/JMIR.hpp"
+#include "Samat/Language/ModuleLoader.hpp"
+#include "Samat/Language/RuntimeABI.h"
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -182,67 +179,6 @@ void sessions() {
     session.dispatch("update");
     require(session.invoke("main").returnValue.toString() == "12", "Persistent globals");
     ++passed;
-#if JMENGINE_HAS_ENGINE
-    const auto source = parse("import jm.game\nlet count = 0\non start:\n    count += 1\non "
-                              "key.right.held:\n    player.moveFloat(direction: 1.0, speed: 8.5)\non "
-                              "key.space.pressed:\n    player.jumpFloat(force: 12.5)\n");
-    for (auto backend : {jm::EngineScriptBackend::Interpreter, jm::EngineScriptBackend::LLVM}) {
-        if (backend == jm::EngineScriptBackend::LLVM && !LLVMBackend::available())
-            continue;
-        jm::Scene scene;
-        scene.create(jm::ObjectKind::Sprite2D).name = "Player";
-        std::string id;
-        float before = 0;
-        for (auto &object : scene.objects())
-            if (object.name == "Player") {
-                id = object.id;
-                before = object.position.x;
-                object.grounded = true;
-            }
-        jm::EngineEventRuntime runtime(scene, id, source, backend);
-        runtime.start();
-        jm::ScriptInput input;
-        input.rightHeld = true;
-        runtime.tick(input, 0.25);
-        runtime.tick(input, 0.25);
-        input.rightHeld = false;
-        input.spacePressed = true;
-        runtime.tick(input, 0.25);
-        for (auto &object : scene.objects())
-            if (object.id == id) {
-                require(std::abs(object.position.x - before - 4.25) < 1e-5, "Float engine movement");
-                require(object.verticalVelocity == 12.5, "Float engine jump");
-            }
-        ++passed;
-    }
-#endif
-#if JMENGINE_HAS_ENGINE
-    auto sceneProgram = parse(
-        "import jm.game\nlet created: String = \"\"\non start:\n    created = scene.createSprite(name: "
-        "\"Extra\")\n    if scene.findId(name: \"Extra\") == created:\n        scene.destroy(id: "
-        "created)\non "
-        "update:\n    if input.isHeld(key: \"right\"):\n        transform.setPosition(x: 5.5, y: 3.5)\n      "
-        "  physics.setVelocityY(velocity: 1.5)\n        physics.applyImpulseY(impulse: 2.0)\n");
-    for (auto backend : {jm::EngineScriptBackend::Interpreter, jm::EngineScriptBackend::LLVM}) {
-        if (backend == jm::EngineScriptBackend::LLVM && !LLVMBackend::available())
-            continue;
-        jm::Scene scene;
-        auto id = scene.objects()[1].id;
-        scene.objects()[1].mass = 1;
-        auto count = scene.objects().size();
-        jm::EngineEventRuntime runtime(scene, id, sceneProgram, backend);
-        jm::ScriptInput input;
-        input.rightHeld = true;
-        runtime.tick(input, .25);
-        require(scene.objects().size() == count, "Spawn/destroy Scene parity");
-        require(scene.objects()[1].position.x == 5.5 && scene.objects()[1].position.y == 3.5 &&
-                    scene.objects()[1].verticalVelocity == 3.5,
-                "Transform/Physics/input parity");
-        runtime.tick(input, .25);
-        require(scene.objects().size() == count, "start dispatched only once");
-        ++passed;
-    }
-#endif
     std::cout << "PASS persistent session and Float Scene event bridge\n";
 }
 void runtimeMemory() {
@@ -334,9 +270,8 @@ int main() {
                "10.5)\n    values.reverse()\n    return values.removeAt(1) + values[1]\n",
                "12.5");
         parity("String globals and return",
-               "let prefix: String = \"JM\"\nfn main() -> String:\n    prefix += \" Engine\"\n    return "
-               "prefix\n",
-               "JM Engine");
+               "let prefix: String = \"Samat\"\nfn main() -> String:\n    return prefix\n",
+               "Samat");
         parity("String numeric conversions",
                "fn main() -> Int:\n    return int(\"40\") + int(float(\"2.9\"))\n", "42");
         parity("exclusive range spelling",

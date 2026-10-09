@@ -1,28 +1,23 @@
-# JM IR and Native Compilation
+# Samat 네이티브 컴파일
 
-For the current optional LLVM ORC JIT, object/AOT commands, verified scalar capabilities, and limitations, see [Samat v0.5](Samat-v0.5.md). The original bootstrap milestone description below is retained as historical context.
+Samat은 인터프리터를 기본 실행 경로로 사용합니다. 선택적으로 LLVM을 통한 JIT/AOT 기능과, 제한된 정수 연산 부분집합을 위한 x64 네이티브 백엔드를 사용할 수 있습니다. Code Syntax와 訓C正音 모두 같은 AST와 중간 표현을 사용합니다.
 
-## Current pipeline
+## 실행 흐름
 
 ```text
-Samat Code Parser ─┐
-                      ├─> jm::script::Program (JM AST) -> JM IR -> NativeBackend -> executable x86-64 code
-訓機正음 Parser ──────┘
-                              └──────────────────────────────> existing Interpreter (development path)
+Code Syntax ─┐
+             ├─> shared Samat AST ─> type checker ─> interpreter
+訓C正音 ─────┘                           └──────────> JM IR ─> native backend
 ```
 
-`parseCode` and `parseKorean` now construct the same `Program` / `Statement` / `Expression` types. The Korean parser recognizes Korean declarations, control-flow headers, returns, and mutation statements and creates AST nodes directly; it does not materialize translated Code Syntax source. Both the interpreter and native lowering consume this AST.
+JM IR은 함수, 매개변수, 지역 변수, 임시 값, 기본 블록, 정수 연산, 호출, 조건 분기, 반복문, 반환을 표현합니다. 예를 들어 다음 함수는
 
-Member calls such as `player.jump(force)` carry a deterministic numeric builtin symbol ID in the AST, with a readable `builtin.player.jump` spelling for diagnostics and registration. JM IR keeps both the ID and name; native callback dispatch uses the ID.
-
-JM IR lives in `JMIR.hpp/.cpp`. It has functions, parameters, locals, SSA-like temporary values, explicit basic blocks, typed i64 operations, calls, conditional branches, loops, and returns. For example:
-
-```text
-fn add(a, b):
+```samat
+fn add(a: Int, b: Int) -> Int:
     return a + b
 ```
 
-becomes (IDs are assigned by the lowerer):
+대략 다음과 같은 중간 표현으로 변환됩니다.
 
 ```text
 func add(2 x i64) -> i64 {
@@ -34,34 +29,19 @@ entry:
 }
 ```
 
-The currently unavailable LLVM backend would map that JM IR to the following LLVM IR shape (illustrative only; this build emits the x86-64 bootstrap backend directly):
-
-```llvm
-define i64 @add(i64 %a, i64 %b) {
-entry:
-  %sum = add i64 %a, %b
-  ret i64 %sum
-}
-```
-
-`NativeBackend` is the target boundary. The current bootstrap implementation, `X64Backend`, emits x86-64 machine instructions into executable memory and invokes them in-process. It is intentionally a narrow backend until LLVM is installed and integrated. The public backend interface allows an LLVM x86-64 backend, LLVM ARM64 backend, or another code generator to be added without changing either parser or the AST.
-
-## Run the prototype compiler
+## 사용 가능한 명령
 
 ```powershell
+Samat.exe check main.st
+Samat.exe run main.st
 Samat.exe --ir examples/Samat/archive/native-factorial.st
 Samat.exe --native main examples/Samat/archive/native-factorial.st
-Samat.exe --native factorial examples/Samat/archive/native-factorial.st 10
 ```
 
-The native command reports the target triple, result, and emitted function machine-code bytes. It uses the same C++ interpreter as the reference path; plain `Samat.exe <file>` continues to run interpreted scripts.
+`check`는 파싱과 타입 검사를 수행하고, `run`은 인터프리터로 실행합니다. `--ir`는 Samat IR을 출력하며 `--native`는 사용 가능한 네이티브 백엔드로 실행합니다. 명령줄 인자는 `Samat --help`에 설명되어 있습니다.
 
-## Native subset and limits
+## x64 부트스트랩 백엔드 범위
 
-The bootstrap x86-64 backend currently handles signed 64-bit integer and boolean literals, mutable local variables, unary `-`/`!`, `+ - * / %`, comparisons, boolean operators, `if/else`, `while`, direct named calls, parameters, returns, and recursion. Korean functions/returns are supported through the same IR. The smoke test compares an interpreter execution with a native result and separately checks return 42, factorial, Fibonacci, branching, a runtime while loop, and a registered C++ callback.
+현재 x64 부트스트랩 백엔드는 부호 있는 64비트 정수와 불리언 리터럴, 변경 가능한 지역 변수, 단항 `-`와 `!`, 산술·비교·논리 연산, `if/else`, `while`, 직접 함수 호출, 매개변수, 반환, 재귀를 지원합니다. 한국어 함수와 반환 표현도 같은 중간 표현으로 컴파일됩니다.
 
-The JM Engine editor's Language Core tab has a Code / 訓機正音 parser toggle and an **x64 native main 실행** action. Its **네이티브 Factorial** starter loads a program with a `main` function and displays the result, JM IR, and native code size.
-
-Lists/maps, floats, strings, closures, nested declarations, `for`, `break`/`continue`, globals and general engine movement scripts are not native-lowerable yet. The existing interpreter remains the complete development execution path for those features. C++ interop is an explicit `builtin.*` registry with a fixed four-i64 calling signature; native C++ callbacks currently use Windows x64 ABI. Engine API registration (including real player/physics/render/audio adapters) remains to be connected. The JIT currently produces executable memory, not a standalone `.exe`, object file, or AOT package.
-
-LLVM was not present in the build environment, so this milestone does not claim LLVM IR emission or LLVM optimization. The next native milestones are LLVM discovery/configuration, an LLVM backend behind `NativeBackend`, richer value representation for lists/strings, engine builtin bindings, and AOT object/executable linking.
+리스트, 맵, 부동소수점, 문자열, 클로저, 중첩 선언, `for`, `break`, `continue`, 전역 변수는 이 백엔드에서 아직 지원하지 않습니다. 이런 프로그램은 인터프리터로 실행할 수 있습니다. LLVM 기능은 LLVM 17 이상을 설치한 뒤 CMake에서 `-DSAMAT_ENABLE_LLVM=ON`으로 설정해 빌드합니다.

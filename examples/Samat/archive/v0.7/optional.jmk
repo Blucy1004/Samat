@@ -1,9 +1,0 @@
-함수 main() -> Int:
-    String? 변수 nickname를 null로 정한다.
-    숫자 변수 displayName를 (nickname ?? "Player")로 정한다.
-    Vector2? 변수 position를 Vector2(41.0, 0.0)로 정한다.
-    실수 변수 x를 (position?.x ?? 0.0)로 정한다.
-    Int? 변수 value를 null로 정한다.
-    (displayName == "Player")라면:
-        (int(x) + (value ?? 1))를 반환한다.
-    0를 반환한다.

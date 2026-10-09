@@ -1,8 +1,5 @@
-#include "JMEngine/Script/JMIR.hpp"
-#include "JMEngine/Script/RuntimeABI.h"
-#if JMENGINE_HAS_ENGINE
-#include "JMEngine/Script/EngineScriptAPI.hpp"
-#endif
+#include "Samat/Language/JMIR.hpp"
+#include "Samat/Language/RuntimeABI.h"
 #include <algorithm>
 #include <bit>
 #include <chrono>
@@ -132,44 +129,6 @@ void memory() {
     jm_runtime_activate(previous);
     jm_runtime_destroy_context(context);
     ++passed;
-}
-void engine() {
-#if JMENGINE_HAS_ENGINE
-    auto p = parse(R"(import jm.game
-struct State:
-    velocity: Vector2
-let state = State(velocity: Vector2(8.0, 0.0))
-on update:
-    player.position += state.velocity * time.delta
-)");
-    for (auto backend : {jm::EngineScriptBackend::Interpreter, jm::EngineScriptBackend::LLVM}) {
-        if (backend == jm::EngineScriptBackend::LLVM && !LLVMBackend::available()) {
-            ++skipped;
-            continue;
-        }
-        for (int cycle = 0; cycle < 50; ++cycle) {
-            jm::Scene scene;
-            auto &object = scene.create(jm::ObjectKind::Sprite2D);
-            object.name = "Player";
-            auto id = object.id;
-            auto start = object.position.x;
-            {
-                jm::EngineEventRuntime runtime(scene, id, p, backend);
-                runtime.start();
-                runtime.start();
-                for (int frame = 0; frame < 100; ++frame)
-                    runtime.tick({}, 0.01);
-            }
-            auto found = std::find_if(scene.objects().begin(), scene.objects().end(),
-                                      [&](const auto &o) { return o.id == id; });
-            require(found != scene.objects().end() && std::abs(found->position.x - start - 8.0) < 0.001,
-                    "Persistent Vector engine movement");
-        }
-        ++passed;
-    }
-#else
-    ++skipped;
-#endif
 }
 void aot() {
 #ifndef _WIN32
@@ -351,7 +310,6 @@ int main() {
             ++passed;
         }
         memory();
-        engine();
         aot();
         std::cout << "Native data regression: " << passed << " checks passed; " << skipped
                   << " unavailable configuration groups.\n";

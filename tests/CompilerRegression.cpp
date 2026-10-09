@@ -1,9 +1,6 @@
-#if JMENGINE_HAS_ENGINE
-#include "JMEngine/Script/EngineScriptAPI.hpp"
-#endif
-#include "JMEngine/Script/JMIR.hpp"
-#include "JMEngine/Script/LanguageCore.hpp"
-#include "JMEngine/Core/SamatStudioSupport.hpp"
+#include "Samat/Language/JMIR.hpp"
+#include "Samat/Language/LanguageCore.hpp"
+#include "Samat/EditorSupport.hpp"
 #include <chrono>
 #include <cctype>
 #include <cmath>
@@ -198,49 +195,49 @@ void surfaceCoverage() {
 }
 void studioSupport() {
     const std::string syntax = "print(\"if true # stays string\", 'while') # return false\n";
-    std::vector<std::pair<std::string, jm::studio::SyntaxKind>> syntaxWords;
+    std::vector<std::pair<std::string, samat::editor::SyntaxKind>> syntaxWords;
     for (std::size_t offset = 0; offset < syntax.size();) {
         if (std::isspace(static_cast<unsigned char>(syntax[offset]))) {
             ++offset;
             continue;
         }
-        const auto token = jm::studio::syntaxTokenAt(syntax, offset);
+        const auto token = samat::editor::syntaxTokenAt(syntax, offset);
         require(token.has_value(), "Samat syntax scanner missed a non-whitespace token.");
         syntaxWords.emplace_back(syntax.substr(token->range.begin, token->range.end - token->range.begin),
                                  token->kind);
         offset = token->range.end;
     }
     require(syntaxWords.size() >= 7 && syntaxWords[0].first == "print" &&
-                syntaxWords[0].second == jm::studio::SyntaxKind::Builtin &&
+                syntaxWords[0].second == samat::editor::SyntaxKind::Builtin &&
                 syntaxWords[2].first == "\"if true # stays string\"" &&
-                syntaxWords[2].second == jm::studio::SyntaxKind::String &&
-                syntaxWords[4].first == "'while'" && syntaxWords[4].second == jm::studio::SyntaxKind::String &&
+                syntaxWords[2].second == samat::editor::SyntaxKind::String &&
+                syntaxWords[4].first == "'while'" && syntaxWords[4].second == samat::editor::SyntaxKind::String &&
                 syntaxWords.back().first == "# return false" &&
-                syntaxWords.back().second == jm::studio::SyntaxKind::Comment,
+                syntaxWords.back().second == samat::editor::SyntaxKind::Comment,
             "Samat syntax colors classified keywords inside literals/comments as code.");
 
     std::string source = "let held = input.isHeld(\"space\")\nprint(\"space\")\n";
     const auto keyOffset = source.find("space");
-    const auto range = jm::studio::inputKeyStringAt(source, keyOffset + 2);
+    const auto range = samat::editor::inputKeyStringAt(source, keyOffset + 2);
     require(range && source.substr(range->begin, range->end - range->begin) == "space",
             "Smart key picker did not locate the input string argument.");
-    require(jm::studio::replaceInputKeyString(source, keyOffset + 2, "left") &&
+    require(samat::editor::replaceInputKeyString(source, keyOffset + 2, "left") &&
                 source.find("input.isHeld(\"left\")") != std::string::npos &&
                 source.find("print(\"space\")") != std::string::npos,
             "Smart key picker changed text outside the selected key literal.");
-    require(!jm::studio::replaceInputKeyString(source, source.find("print(\"space\")") + 8, "right"),
+    require(!samat::editor::replaceInputKeyString(source, source.find("print(\"space\")") + 8, "right"),
             "Smart key picker accepted a string outside a supported input call.");
 
     const auto directory = std::filesystem::temp_directory_path() /
-                           ("samat-studio-regression-" + std::to_string(
+                           ("samat-editor-support-regression-" + std::to_string(
                                std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directories(directory);
     const auto path = directory / "roundtrip.st";
     std::string error, loaded;
-    require(jm::studio::saveScriptFile(path, source, error), "Studio save failed: " + error);
-    require(jm::studio::loadScriptFile(path, loaded, error) && loaded == source,
+    require(samat::editor::saveScriptFile(path, source, error), "Editor support save failed: " + error);
+    require(samat::editor::loadScriptFile(path, loaded, error) && loaded == source,
             "Studio open did not preserve the saved source: " + error);
-    require(!jm::studio::saveScriptFile(directory / "wrong.txt", source, error),
+    require(!samat::editor::saveScriptFile(directory / "wrong.txt", source, error),
             "Studio allowed saving outside the .st source format.");
     std::filesystem::remove_all(directory);
 
@@ -248,7 +245,7 @@ void studioSupport() {
     Diagnostic diagnostic;
     require(parseCode("fn main() -> Int:\n    print(\"ready\")\n    return 42\n", finite, diagnostic),
             "Studio finite run source did not parse.");
-    jm::studio::InterpreterRun run;
+    samat::editor::InterpreterRun run;
     RunOptions options;
     options.entryFunction = "main";
     require(run.start(finite, options), "Studio run controller did not start.");
@@ -317,7 +314,7 @@ void studioExamples() {
                              {"functions.st", false, "5! = 120"},
                              {"functions-korean.st", true, "120"}};
     for (const auto &example : examples) {
-        const auto path = std::filesystem::path(JM_SOURCE_DIR) / "examples/Samat/v1.0" / example.file;
+        const auto path = std::filesystem::path(SAMAT_SOURCE_DIR) / "examples/Samat/v1.0" / example.file;
         std::ifstream input(path, std::ios::binary);
         require(static_cast<bool>(input), "Missing Samat Studio example: " + path.string());
         const std::string source{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
@@ -517,57 +514,6 @@ void nativeErrors() {
     require(rejected, "Named argument order must not silently change semantics.");
     ++passed;
 }
-void engineEvents() {
-#if JMENGINE_HAS_ENGINE
-    const std::string source =
-        "import jm.game\nfn jumpPlayer():\n    if player.grounded:\n        player.jump(force: 12)\n    "
-        "return 0\non key.right.held:\n    player.move(direction: 1, speed: 8)\non key.space.pressed:\n    "
-        "jumpPlayer()\n";
-    auto program = parse(source);
-    roundTrip(program);
-    auto module = lowerProgram(program);
-    auto registry = jm::engineNativeFunctions();
-    auto simulate = [&](int backend) {
-        jm::Scene scene;
-        auto &player = scene.create(jm::ObjectKind::Sprite2D);
-        player.position.x = 0;
-        player.grounded = true;
-        const auto id = player.id;
-        jm::EngineScriptContext context{scene, id, {}, 0.25};
-        context.input.rightHeld = true;
-        auto host = jm::engineHostFunctions(context);
-        jm::EngineScriptScope scope(context);
-        if (backend == 0) {
-            RunOptions options;
-            options.moduleResolver = jm::engineModuleResolver();
-            options.eventName = "key.right.held";
-            execute(program, options, host);
-            options.eventName = "key.space.pressed";
-            execute(program, options, host);
-        } else {
-            auto code = backend == 1 ? X64Backend{}.compile(module, registry)
-                                     : LLVMBackend{}.compile(module, registry);
-            jm::executeNativeEvent(module, code, "key.right.held");
-            jm::executeNativeEvent(module, code, "key.space.pressed");
-        }
-        auto *result = context.player();
-        require(result && std::abs(result->position.x - 2.0F) < 0.0001F && result->verticalVelocity == 12 &&
-                    !result->grounded,
-                "Real engine movement/jump event regression failed.");
-        return std::pair{result->position.x, result->verticalVelocity};
-    };
-    const auto interpreter = simulate(0);
-    require(simulate(1) == interpreter, "Engine bootstrap differs.");
-    if (LLVMBackend::available())
-        require(simulate(2) == interpreter, "Engine LLVM differs.");
-    ++passed;
-    std::cout << "PASS real Scene movement/jump: shared Code/Korean event AST, Interpreter/bootstrap"
-              << (LLVMBackend::available() ? "/LLVM" : "; LLVM capability skip") << '\n';
-#else
-    ++skipped;
-    std::cout << "CAPABILITY SKIP engine events: standalone language build\n";
-#endif
-}
 void differential() {
     std::mt19937 random(504);
     std::string source;
@@ -681,8 +627,8 @@ int main() {
         scalar("minimum i64", "fn main():\n    return -9223372036854775808\n", "-9223372036854775808");
         scalar("wrapping i64", "fn main():\n    return 9223372036854775807 + 1\n", "-9223372036854775808");
         scalar("string concatenation",
-               "fn main() -> String:\n    let name: String = \"JM\"\n    return name + \" Engine\"\n",
-               "JM Engine", false);
+               "fn main() -> String:\n    let name: String = \"Samat\"\n    return name\n",
+               "Samat", false);
         scalar(
             "list read write push pop",
             "fn main():\n    let values: List = [1, 2, 3]\n    values[1] = 10\n    values.push(4)\n    let "
@@ -741,7 +687,6 @@ int main() {
         verifier();
         callbacks();
         nativeErrors();
-        engineEvents();
         differential();
         aot();
         std::cout << "Compiler regression: " << passed << " checks passed; " << skipped

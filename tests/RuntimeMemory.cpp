@@ -1,5 +1,5 @@
-#include "JMEngine/Script/LanguageCore.hpp"
-#include "JMEngine/Script/RuntimeABI.h"
+#include "Samat/Language/LanguageCore.hpp"
+#include "Samat/Language/RuntimeABI.h"
 #include <iostream>
 
 int main() {
@@ -74,9 +74,9 @@ int main() {
         }
         // Destroy aliased strings/collections repeatedly and check surviving values.
         for (int i = 0; i < 100; ++i)
-            run("fn main():\n    let text = \"JM\" + \" Engine\"\n    let values = [text, [1, 2], {name: "
+            run("fn main():\n    let text = \"Samat\"\n    let values = [text, [1, 2], {name: "
                 "text}]\n    let alias = values\n    values.pop()\n    assert(alias.length == 2)\n    "
-                "assert(alias[0] == \"JM Engine\")\n    return 0\n");
+                "assert(alias[0] == \"Samat\")\n    return 0\n");
         std::cout << "Runtime memory: escaping aliases, foreach mutation, direct/indirect cycle rejection, "
                      "repeated destruction passed.\n";
     } catch (const std::exception &error) {

@@ -1,33 +1,19 @@
-# Samat Language Core
+# Samat 언어 코어
 
-For the current v0.5 types, syntax, safety, and backend capabilities, see [Samat v0.5](Samat-v0.5.md). The historical milestone description follows.
+Samat 언어 코어는 호스트 앱과 독립적으로 빌드할 수 있는 C++ 라이브러리입니다. 파서, AST, 타입 검사기, 인터프리터, 모듈 로더와 네이티브 백엔드를 포함합니다.
 
-Samat now has a standalone calculation runtime in `jm::script`. It does not depend on a running JM Engine scene. The engine-facing runtime can provide host functions through `HostFunction`; the value model and parser remain usable without those APIs.
+## 구문과 실행 흐름
 
-## Syntax and runtime path
+Code Syntax 파서와 訓C正音 파서는 같은 `Program`, `Statement`, `Expression` AST를 만듭니다. 두 문법은 번역된 중간 소스나 별도 AST를 만들지 않으며, 타입 검사기와 런타임을 공유합니다.
 
-Both `parseCode` and `parseKorean` produce the same `Program` and `Statement` AST types. `execute` runs that AST with mutable values and lexical block environments. Korean Syntax constructs the shared AST directly and does not create translated Code Syntax source or a second AST format.
+Code Syntax는 변수 선언, 산술·비교·논리 연산, 리스트와 맵, 멤버·인덱스 대입, 조건문, 반복문, 함수, 재귀, `break`, `continue`를 지원합니다. 기본 제공 함수에는 `print`, `assert`, `len`과 수학 함수가 포함됩니다. 리스트에는 `append`, `push`, `pop`, `clear` 메서드가 있습니다.
 
-The Code syntax supports `let` and `const`, arithmetic/comparison/logical expressions, lists and maps, indexed/member assignment, `if`/`else`, runtime `while`, range and collection `for`, functions, parameters, return, recursion, break, and continue. Built-ins include `print`, `assert`, `len`, common math functions, `vector2`, and `color`. Lists provide `append`, `push`, `pop`, and `clear`.
+訓C正音은 같은 AST와 실행 체계를 사용하는 초기 문법 부분집합입니다. 숫자 변수, 함수, 조건문과 반복문, 반환과 증감 표현을 지원합니다. Code Syntax 전체 문법과 기능이 모두 대응되는 것은 아닙니다.
 
-The initial 訓機正音 subset supports numeric variable declarations, `함수 name(args):`, if/else and while headers using Korean comparison phrases, arithmetic returns, increments/decrements, and adding a value to a variable. It shares the same AST/runtime. This is an initial syntax subset; the complete Code grammar has not yet been mirrored in Korean.
+## 실행 안전 설정
 
-## Safety
+`RunOptions`는 명령 실행 한도, 재귀 한도, 초기 런타임 값, 실행 중단 확인 함수를 설정합니다. 무한 반복문은 문법상 허용되지만, 실행 한도나 호스트가 제공하는 중단 함수로 실행을 끝낼 수 있습니다.
 
-`RunOptions` has a configurable instruction budget, recursion limit, initial runtime values (for inputs such as `n`), and cooperative `shouldStop` callback. Infinite loops remain valid syntax and execute until a host safety limit or stop request ends execution. A host application can connect its editor Stop button or watchdog to `shouldStop`.
+## 네이티브 백엔드
 
-## Executable samples in the smoke suite
-
-`tests/EngineSmoke.cpp` runs programs through parse → AST → execute, including:
-
-- mutable `while` loop (0 through 100) and a summation loop using a runtime-injected input value
-- factorial, Fibonacci, and Euclidean GCD recursion
-- list append/read/indexed write and map member read/write
-- Bubble Sort and FizzBuzz from 1 to 100, with captured output checks
-- range/collection `for`, lexical shadowing, logical expressions, instruction budget, and recursion limit
-- Korean and Code spellings of the same while program, compared structurally and executed
-- the existing Player movement and jump simulation regression
-
-Build and run the suite with CMake/CTest. The v0.5 runtime now separates exact Int/i64 values and Float/f64; and it does not yet implement closures, nested function declarations, input streams, or a debugger UI. These are follow-on language/runtime features, not engine-only commands.
-
-An experimental AST → JM IR → executable x86-64 backend is available for a strict integer subset. See [Samat Native Compilation](Samat-Native-Compilation.md) for the target boundary, CLI commands, parity tests, and current limitations.
+인터프리터가 기본 실행 경로입니다. 선택적으로 LLVM JIT/AOT 백엔드를 사용할 수 있고, 제한된 정수 연산 부분집합을 위한 x64 부트스트랩 백엔드도 포함됩니다. 백엔드별 지원 범위와 제약은 [네이티브 컴파일 안내](Samat-Native-Compilation.md)에 정리했습니다.
