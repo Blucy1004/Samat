@@ -109,7 +109,7 @@ ctest --test-dir build --output-on-failure
 
 ## 라이선스
 
-라이선스 정보는 저장소의 `LICENSE` 파일을 확인하세요.
+Samat은 MIT License로 배포합니다. 자세한 내용은 [LICENSE](LICENSE) 파일을 확인하세요.
 
 ### 세종대왕님, 정의공주님, 문종대왕님, 집현전의 모든 학자들, 그리고 한글의 창제와 발전에 도움을 주신 모든 분들께 특별한 감사를 전합니다.
 

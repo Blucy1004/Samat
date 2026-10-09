@@ -76,4 +76,4 @@ class InterpreterRun {
     std::uint64_t nextGeneration_{1};
 };
 
-} // namespace jm::studio
+} // namespace samat::editor

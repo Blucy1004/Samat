@@ -96,6 +96,18 @@ if(MSVC)
     target_compile_options(samat_cli PRIVATE /EHs /utf-8)
 endif()
 
+if(WIN32)
+    add_executable(samat_studio WIN32 src/Samat/Studio/Main.cpp)
+    set_target_properties(samat_studio PROPERTIES OUTPUT_NAME SamatStudio)
+    target_link_libraries(samat_studio PRIVATE Samat::Core comdlg32 comctl32)
+    target_compile_definitions(samat_studio PRIVATE
+        SAMAT_STUDIO_EXAMPLES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples/Samat/v1.0")
+    if(MSVC)
+        target_compile_options(samat_studio PRIVATE /EHs /utf-8)
+    endif()
+    install(TARGETS samat_studio RUNTIME DESTINATION bin COMPONENT Samat)
+endif()
+
 if(BUILD_TESTING)
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/runner-lf.in" "7\n*\n7")
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/runner-crlf.in" "7\r\n*\r\n7\r\n")
