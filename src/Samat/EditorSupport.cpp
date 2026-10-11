@@ -21,7 +21,7 @@ constexpr std::size_t maximumScriptBytes = 16 * 1024 * 1024;
 
 const std::unordered_set<std::string_view> &samatKeywords() {
     static const std::unordered_set<std::string_view> values{
-        "let", "const", "fn", "if", "else", "while", "for", "in", "return", "break", "continue",
+        "let", "const", "fn", "if", "else", "match", "case", "default", "while", "for", "in", "return", "break", "continue",
         "true", "false", "null", "and", "or", "not", "import", "on", "enum", "struct",
         "함수", "변수", "상수", "라면", "아니라면", "동안", "반환한다", "반복하며", "반복을",
         "멈춘다", "다음", "진행한다", "가져온다", "모듈", "실행한다", "출력한다", "참", "거짓", "시작할", "때"};

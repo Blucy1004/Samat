@@ -1919,6 +1919,79 @@ class CodeParser {
             text += "?";
         return parseAnnotation(text);
     }
+    Statement matchStatement() {
+        ++position_;
+        auto subject = expression();
+        if (subject->kind != Expression::Kind::Identifier)
+            throw std::runtime_error("A match subject must be a variable name.");
+        expect(Token::Kind::Colon, "Expected ':' after match subject.");
+        lineEnd();
+        expect(Token::Kind::Indent, "Expected an indented match body.");
+
+        struct MatchCase {
+            ExpressionPtr value;
+            StatementList body;
+        };
+        std::vector<MatchCase> cases;
+        StatementList fallback;
+        bool hasDefault = false;
+        while (peek().kind != Token::Kind::Dedent && peek().kind != Token::Kind::End) {
+            if (take(Token::Kind::Newline))
+                continue;
+            if (keyword("case")) {
+                if (hasDefault)
+                    throw std::runtime_error("'case' cannot follow 'default'.");
+                ++position_;
+                auto value = expression();
+                expect(Token::Kind::Colon, "Expected ':' after case value.");
+                lineEnd();
+                auto body = block(true);
+                if (body.empty())
+                    throw std::runtime_error("A case needs at least one statement.");
+                cases.push_back({std::move(value), std::move(body)});
+                continue;
+            }
+            if (keyword("default")) {
+                if (hasDefault)
+                    throw std::runtime_error("A match can have only one 'default'.");
+                ++position_;
+                expect(Token::Kind::Colon, "Expected ':' after default.");
+                lineEnd();
+                fallback = block(true);
+                if (fallback.empty())
+                    throw std::runtime_error("A default needs at least one statement.");
+                hasDefault = true;
+                continue;
+            }
+            throw std::runtime_error("Expected 'case' or 'default' in match body.");
+        }
+        expect(Token::Kind::Dedent, "Expected the end of the match body.");
+        if (cases.empty())
+            throw std::runtime_error("A match needs at least one case.");
+
+        Statement result;
+        result.kind = Statement::Kind::If;
+        auto makeCondition = [&](ExpressionPtr value) {
+            auto condition = node(Expression::Kind::Binary, "==");
+            condition->left = node(Expression::Kind::Identifier, subject->text);
+            condition->right = std::move(value);
+            return condition;
+        };
+        StatementList chain;
+        if (hasDefault)
+            chain = std::move(fallback);
+        for (auto it = cases.rbegin(); it != cases.rend(); ++it) {
+            Statement branch;
+            branch.kind = Statement::Kind::If;
+            branch.expression = makeCondition(it->value);
+            branch.body = std::move(it->body);
+            branch.alternative = std::move(chain);
+            chain.clear();
+            chain.push_back(std::move(branch));
+        }
+        result = std::move(chain.front());
+        return result;
+    }
     Statement statement() {
         if (keyword("enum"))
             return dataDeclaration(true);
@@ -2020,6 +2093,8 @@ class CodeParser {
             }
             return result;
         }
+        if (keyword("match"))
+            return matchStatement();
         if (keyword("while")) {
             ++position_;
             Statement result;
