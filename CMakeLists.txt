@@ -89,7 +89,16 @@ if(NOT SAMAT_LLD_LINK)
 endif()
 target_compile_definitions(samat_core PRIVATE SAMAT_CLANG="${SAMAT_CLANG}" SAMAT_LLD_LINK="${SAMAT_LLD_LINK}")
 
+if(WIN32)
+    set(SAMAT_ICON "${CMAKE_CURRENT_SOURCE_DIR}/src/Samat/Samat.ico")
+    configure_file(src/Samat/Samat.rc.in
+        "${CMAKE_CURRENT_BINARY_DIR}/Samat.rc" @ONLY)
+endif()
+
 add_executable(samat_cli src/Samat/CLI/Main.cpp)
+if(WIN32)
+    target_sources(samat_cli PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/Samat.rc")
+endif()
 set_target_properties(samat_cli PROPERTIES OUTPUT_NAME Samat)
 target_link_libraries(samat_cli PRIVATE Samat::Core)
 if(MSVC)
@@ -97,15 +106,42 @@ if(MSVC)
 endif()
 
 if(WIN32)
-    add_executable(samat_studio WIN32 src/Samat/Studio/Main.cpp)
+    add_executable(samat_studio WIN32
+        src/Samat/Studio/Main.cpp
+        "${CMAKE_CURRENT_BINARY_DIR}/Samat.rc")
     set_target_properties(samat_studio PROPERTIES OUTPUT_NAME SamatStudio)
-    target_link_libraries(samat_studio PRIVATE Samat::Core comdlg32 comctl32)
+    add_executable(samat_runner WIN32
+        src/Samat/Runner/Main.cpp
+        "${CMAKE_CURRENT_BINARY_DIR}/Samat.rc")
+    set_target_properties(samat_runner PROPERTIES OUTPUT_NAME SamatRunner)
+    target_link_libraries(samat_runner PRIVATE Samat::Core comdlg32 user32 gdi32)
+    set(SAMAT_WEBVIEW2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/WebView2")
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(SAMAT_WEBVIEW2_ARCH x64)
+    else()
+        set(SAMAT_WEBVIEW2_ARCH x86)
+    endif()
+    target_include_directories(samat_studio PRIVATE "${SAMAT_WEBVIEW2_ROOT}/include")
+    target_link_libraries(samat_studio PRIVATE Samat::Core comdlg32 comctl32
+        "${SAMAT_WEBVIEW2_ROOT}/lib/${SAMAT_WEBVIEW2_ARCH}/WebView2Loader.dll.lib")
     target_compile_definitions(samat_studio PRIVATE
-        SAMAT_STUDIO_EXAMPLES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples/Samat/v1.0")
+        SAMAT_STUDIO_EXAMPLES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/examples/Samat/v1.0"
+        SAMAT_STUDIO_WEB_DIR="${CMAKE_CURRENT_BINARY_DIR}/studio-web")
+    add_custom_command(TARGET samat_studio POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/Samat/Studio/web" "$<TARGET_FILE_DIR:samat_studio>/studio-web"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${SAMAT_WEBVIEW2_ROOT}/runtime/${SAMAT_WEBVIEW2_ARCH}/WebView2Loader.dll" "$<TARGET_FILE_DIR:samat_studio>/WebView2Loader.dll")
     if(MSVC)
         target_compile_options(samat_studio PRIVATE /EHs /utf-8)
+        target_compile_options(samat_runner PRIVATE /EHs /utf-8)
     endif()
-    install(TARGETS samat_studio RUNTIME DESTINATION bin COMPONENT Samat)
+    install(TARGETS samat_studio samat_runner RUNTIME DESTINATION bin COMPONENT Samat)
+    install(DIRECTORY src/Samat/Studio/web/ DESTINATION bin/studio-web COMPONENT Samat)
+    install(FILES "${SAMAT_WEBVIEW2_ROOT}/runtime/${SAMAT_WEBVIEW2_ARCH}/WebView2Loader.dll"
+        DESTINATION bin COMPONENT Samat)
+    install(FILES src/Samat/Samat.ico src/Samat/Samat.png
+        DESTINATION share/Samat COMPONENT Samat)
 endif()
 
 if(BUILD_TESTING)

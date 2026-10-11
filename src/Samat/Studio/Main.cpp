@@ -2,25 +2,37 @@
 #define UNICODE
 #define _UNICODE
 #include "Samat/EditorSupport.hpp"
-
+#include "Samat/Haerye.hpp"
 #include <windows.h>
 #include <windowsx.h>
 #include <commctrl.h>
+#include <commdlg.h>
 #include <richedit.h>
+#include <WebView2.h>
+#include <wrl.h>
 
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cmath>
+#include <cwctype>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <memory>
+#include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <unordered_map>
 #include <vector>
 
 namespace {
 using namespace jm::script;
+using Microsoft::WRL::Callback;
+using Microsoft::WRL::ComPtr;
 
 constexpr wchar_t windowClass[] = L"SamatStudioWindow";
 constexpr int idCategories = 1001;
@@ -48,17 +60,21 @@ constexpr int idExamplesFilter = 1022;
 constexpr int idCodePage = 1023;
 constexpr int idRuntimePage = 1024;
 constexpr int idRefreshVariables = 1025;
+constexpr int idOpenHaerye = 1026;
 constexpr UINT_PTR runTimer = 1;
 constexpr UINT_PTR highlightTimer = 2;
+constexpr UINT_PTR engineTimer = 3;
+constexpr UINT webMessageDispatch = WM_APP + 31;
 
-constexpr COLORREF backgroundColor = RGB(15, 18, 24);
-constexpr COLORREF panelColor = RGB(23, 28, 37);
-constexpr COLORREF raisedColor = RGB(30, 37, 48);
-constexpr COLORREF borderColor = RGB(42, 51, 65);
-constexpr COLORREF foregroundColor = RGB(230, 237, 245);
-constexpr COLORREF mutedColor = RGB(142, 155, 173);
-constexpr COLORREF accentColor = RGB(83, 221, 183);
-constexpr COLORREF selectedColor = RGB(34, 62, 62);
+constexpr COLORREF backgroundColor = RGB(34, 32, 49);
+constexpr COLORREF panelColor = RGB(46, 43, 65);
+constexpr COLORREF raisedColor = RGB(58, 54, 80);
+constexpr COLORREF borderColor = RGB(88, 79, 121);
+constexpr COLORREF foregroundColor = RGB(242, 239, 250);
+constexpr COLORREF mutedColor = RGB(173, 166, 198);
+constexpr COLORREF accentColor = RGB(189, 166, 255);
+constexpr COLORREF selectedColor = RGB(73, 62, 105);
+constexpr COLORREF stageColor = RGB(247, 245, 251);
 
 struct Category {
     const wchar_t *name;
@@ -72,7 +88,7 @@ struct Example {
     const wchar_t *file;
 };
 
-constexpr std::array<Category, 7> categories{{
+constexpr std::array<Category, 8> categories{{
     {L"시작하기", L"Samat의 첫 코드"},
     {L"함수와 계산", L"함수 선언과 값 반환"},
     {L"조건과 반복", L"조건문, 범위, 반복문"},
@@ -80,9 +96,10 @@ constexpr std::array<Category, 7> categories{{
     {L"콘솔 입력", L"입력을 받는 작은 프로그램"},
     {L"네이티브", L"x64 백엔드 예제"},
     {L"문자열", L"문자열 안에 값을 표현"},
+    {L"게임", L"해례 장면과 게임 로직"},
 }};
 
-constexpr std::array<Example, 7> examples{{
+constexpr std::array<Example, 8> examples{{
     {L"Hello, Samat", L"시작하기", L"화면에 첫 문장을 출력합니다", L"hello.st"},
     {L"함수 맛보기", L"함수와 계산", L"factorial 함수와 결과 출력", L"functions.st"},
     {L"재귀 함수", L"함수와 계산", L"정수 함수의 네이티브 컴파일", L"native-factorial.st"},
@@ -90,9 +107,15 @@ constexpr std::array<Example, 7> examples{{
     {L"한국어 함수", L"訓C正音", L"같은 언어 기능을 한국어 문법으로 표현", L"functions-korean.st"},
     {L"대화형 계산기", L"콘솔 입력", L"readLine으로 입력받아 사칙 연산", L"calculator.st"},
     {L"문자열 보간", L"문자열", L"f-문자열에 변수와 식을 넣어 출력", L"string-interpolation.st"},
+    {L"2D 파쿠르", L"게임", L"점프 거리와 발판 구간을 계산", L"parkour.st"},
 }};
 
 HWND mainWindow{};
+ComPtr<ICoreWebView2Environment> webEnvironment;
+ComPtr<ICoreWebView2Controller> webController;
+ComPtr<ICoreWebView2> webView;
+bool webReady{};
+bool webMode{true};
 HWND categoryList{};
 HWND exampleList{};
 HWND editor{};
@@ -103,6 +126,7 @@ HWND categoryCaption{};
 HWND examplesCaption{};
 HWND outputCaption{};
 HWND openButton{};
+HWND openHaeryeButton{};
 HWND newButton{};
 HWND saveButton{};
 HWND checkButton{};
@@ -130,8 +154,14 @@ HFONT editorFont{};
 HBRUSH backgroundBrush{};
 HBRUSH panelBrush{};
 HBRUSH raisedBrush{};
+HBRUSH stageBrush{};
+HFONT cardTitleFont{};
+HFONT cardDetailFont{};
 std::filesystem::path examplesPath;
 std::filesystem::path currentPath;
+std::filesystem::path haeryePath;
+jm::HaeryeDocument runtimeScene;
+bool runtimeSceneLoaded{};
 std::vector<const Example *> visibleExamples;
 samat::editor::InterpreterRun interpreter;
 bool hasActiveRun{};
@@ -143,7 +173,7 @@ bool sidebarVisible{true};
 bool draggingOutputSplitter{};
 bool draggingSidebarSplitter{};
 int outputPanelHeight{190};
-int sidebarWidthSetting{250};
+int sidebarWidthSetting{405};
 std::wstring exampleFilterText;
 enum class Surface { Code, Korean };
 Surface currentSurface{Surface::Code};
@@ -160,6 +190,35 @@ struct RuntimeVariableRow {
 };
 std::vector<RuntimeVariableRow> runtimeVariables;
 int runtimeVariablesScroll{};
+
+struct EngineSprite {
+    std::int64_t id{};
+    std::string name;
+    std::string color;
+    std::string source;
+    double x{}, y{}, width{48.0}, height{48.0};
+    std::unique_ptr<ExecutionSession> session;
+};
+std::vector<EngineSprite> engineSprites;
+std::unordered_set<std::wstring> engineKeys;
+std::filesystem::path currentProjectPath;
+bool engineRunning{};
+bool engineProjectMode{};
+bool engineProjectDirty{};
+std::wstring standaloneSourceSnapshot;
+std::filesystem::path standalonePathSnapshot;
+Surface standaloneSurfaceSnapshot{Surface::Code};
+bool standaloneDirtySnapshot{};
+bool standaloneSnapshotValid{};
+double engineDeltaTime{1.0 / 60.0};
+std::chrono::steady_clock::time_point engineLastFrame{};
+
+void postWebMessage(std::wstring message);
+void setText(HWND control, std::wstring_view text);
+void updatePathLabel();
+void publishEditorState();
+void publishRuntimeOutput();
+void newDocument();
 
 void layoutControls(HWND window);
 void refreshRuntimeVariables(bool preserveValues = true);
@@ -194,6 +253,459 @@ std::wstring windowText(HWND control) {
     GetWindowTextW(control, value.data(), static_cast<int>(value.size()));
     value.resize(static_cast<std::size_t>(std::max(0, length)));
     return value;
+}
+
+std::filesystem::path studioWebDirectory() {
+#ifdef SAMAT_STUDIO_WEB_DIR
+    const std::filesystem::path buildAssets(SAMAT_STUDIO_WEB_DIR);
+    if (std::filesystem::exists(buildAssets / L"index.html"))
+        return buildAssets;
+#endif
+    std::array<wchar_t, 32768> module{};
+    const DWORD size = GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()));
+    return size > 0 && size < module.size() ? std::filesystem::path(module.data()).parent_path() / L"studio-web"
+                                            : std::filesystem::current_path() / L"studio-web";
+}
+
+std::string jsonQuoted(std::string_view value) {
+    std::string result{"\""};
+    for (const unsigned char ch : value) {
+        switch (ch) {
+        case '"': result += "\\\""; break;
+        case '\\': result += "\\\\"; break;
+        case '\n': result += "\\n"; break;
+        case '\r': result += "\\r"; break;
+        case '\t': result += "\\t"; break;
+        default:
+            if (ch < 0x20) {
+                constexpr char hex[] = "0123456789abcdef";
+                result += "\\u00";
+                result += hex[ch >> 4];
+                result += hex[ch & 15];
+            } else result.push_back(static_cast<char>(ch));
+        }
+    }
+    result += '"';
+    return result;
+}
+
+std::optional<std::filesystem::path> chooseProjectPath(bool save) {
+    std::array<wchar_t, 32768> path{};
+    if (!currentProjectPath.empty())
+        wcsncpy_s(path.data(), path.size(), currentProjectPath.c_str(), _TRUNCATE);
+    OPENFILENAMEW dialog{sizeof(dialog)};
+    dialog.hwndOwner = mainWindow;
+    dialog.lpstrFilter = L"Samat Studio Project (*.samatproj)\0*.samatproj\0All files (*.*)\0*.*\0\0";
+    dialog.lpstrFile = path.data();
+    dialog.nMaxFile = static_cast<DWORD>(path.size());
+    dialog.lpstrDefExt = L"samatproj";
+    dialog.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+    const BOOL selected = save ? GetSaveFileNameW(&dialog) : GetOpenFileNameW(&dialog);
+    if (!selected)
+        return std::nullopt;
+    return std::filesystem::path(path.data());
+}
+
+bool readProjectPacket(std::wstring_view packet, std::wstring &projectName, std::vector<EngineSprite> &sprites,
+                       std::wstring &error) {
+    std::size_t at = 0;
+    auto line = [&]() -> std::optional<std::wstring_view> {
+        const auto end = packet.find(L'\n', at);
+        if (end == std::wstring_view::npos)
+            return std::nullopt;
+        auto result = packet.substr(at, end - at);
+        if (!result.empty() && result.back() == L'\r')
+            result.remove_suffix(1);
+        at = end + 1;
+        return result;
+    };
+    auto text = [&]() -> std::optional<std::wstring_view> {
+        const auto lengthLine = line();
+        if (!lengthLine)
+            return std::nullopt;
+        std::size_t length{};
+        try {
+            length = static_cast<std::size_t>(std::stoull(std::wstring(*lengthLine)));
+        } catch (...) {
+            return std::nullopt;
+        }
+        if (length > packet.size() - at)
+            return std::nullopt;
+        const auto result = packet.substr(at, length);
+        at += length;
+        if (at < packet.size() && packet[at] == L'\r')
+            ++at;
+        if (at < packet.size() && packet[at] == L'\n')
+            ++at;
+        return result;
+    };
+    auto number = [&](double &value) {
+        const auto item = line();
+        if (!item)
+            return false;
+        try {
+            std::size_t used{};
+            value = std::stod(std::wstring(*item), &used);
+            return used == item->size() && std::isfinite(value);
+        } catch (...) {
+            return false;
+        }
+    };
+    if (line() != std::optional<std::wstring_view>(L"SMP1")) {
+        error = L"지원하지 않는 프로젝트 형식입니다.";
+        return false;
+    }
+    const auto name = text();
+    const auto countLine = line();
+    std::size_t count{};
+    try {
+        if (!countLine)
+            throw std::runtime_error("count");
+        count = static_cast<std::size_t>(std::stoull(std::wstring(*countLine)));
+    } catch (...) {
+        error = L"프로젝트의 오브젝트 수가 잘못되었습니다.";
+        return false;
+    }
+    if (!name || count > 500) {
+        error = L"프로젝트 헤더가 올바르지 않습니다.";
+        return false;
+    }
+    projectName.assign(*name);
+    sprites.clear();
+    sprites.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto idLine = line();
+        EngineSprite sprite;
+        try {
+            if (!idLine)
+                throw std::runtime_error("id");
+            sprite.id = std::stoll(std::wstring(*idLine));
+        } catch (...) {
+            error = L"오브젝트 식별자가 잘못되었습니다.";
+            return false;
+        }
+        const auto spriteName = text();
+        if (!spriteName || !number(sprite.x) || !number(sprite.y) || !number(sprite.width) ||
+            !number(sprite.height)) {
+            error = L"오브젝트 속성을 읽을 수 없습니다.";
+            return false;
+        }
+        if (sprite.width <= 0.0 || sprite.height <= 0.0) {
+            error = L"오브젝트 크기는 0보다 커야 합니다.";
+            return false;
+        }
+        sprite.name = toUtf8(*spriteName);
+        const auto color = text();
+        const auto source = text();
+        if (!color || !source) {
+            error = L"오브젝트 색상 또는 코드를 읽을 수 없습니다.";
+            return false;
+        }
+        sprite.color = toUtf8(*color);
+        sprite.source = toUtf8(*source);
+        sprites.push_back(std::move(sprite));
+    }
+    return true;
+}
+
+std::string engineStatePacket() {
+    std::ostringstream out;
+    out.precision(12);
+    for (const auto &sprite : engineSprites)
+        out << sprite.id << '|' << sprite.x << '|' << sprite.y << '\n';
+    return out.str();
+}
+
+void syncSpriteFromSession(EngineSprite &sprite) {
+    if (!sprite.session)
+        return;
+    const auto variables = sprite.session->inspect();
+    for (const auto &[name, value] : variables) {
+        if (name != "x" && name != "y")
+            continue;
+        try {
+            const auto separator = value.find(": ");
+            const double number = std::stod(separator == std::string::npos ? value : value.substr(separator + 2));
+            if (std::isfinite(number))
+                (name == "x" ? sprite.x : sprite.y) = number;
+        } catch (...) {
+        }
+    }
+}
+
+void stopEngine() {
+    engineRunning = false;
+    if (mainWindow)
+        KillTimer(mainWindow, engineTimer);
+    for (auto &sprite : engineSprites)
+        sprite.session.reset();
+    engineKeys.clear();
+}
+
+void beginEngineProjectMode() {
+    if (!engineProjectMode) {
+        standaloneSourceSnapshot = windowText(editor);
+        standalonePathSnapshot = currentPath;
+        standaloneSurfaceSnapshot = currentSurface;
+        standaloneDirtySnapshot = documentDirty;
+        standaloneSnapshotValid = true;
+    }
+    engineProjectMode = true;
+}
+
+void returnToSingleFileMode() {
+    stopEngine();
+    engineProjectMode = false;
+    if (standaloneSnapshotValid) {
+        suppressEditorChange = true;
+        setText(editor, standaloneSourceSnapshot);
+        suppressEditorChange = false;
+        currentPath = standalonePathSnapshot;
+        currentSurface = standaloneSurfaceSnapshot;
+        documentDirty = standaloneDirtySnapshot;
+        standaloneSnapshotValid = false;
+        updatePathLabel();
+        refreshRuntimeVariables(true);
+    }
+    publishEditorState();
+    publishRuntimeOutput();
+}
+
+bool startEngine(std::wstring_view packet) {
+    stopEngine();
+    std::wstring name, error;
+    std::vector<EngineSprite> parsed;
+    if (!readProjectPacket(packet, name, parsed, error)) {
+        postWebMessage(L"engine-status\n오류\n" + error);
+        return false;
+    }
+    engineSprites = std::move(parsed);
+    for (auto &sprite : engineSprites) {
+        Program program;
+        Diagnostic diagnostic;
+        if (!parseCode(sprite.source, program, diagnostic) && !parseKorean(sprite.source, program, diagnostic)) {
+            stopEngine();
+            postWebMessage(L"engine-status\n오류\n" + toWide(sprite.name) + L" 코드 오류: " +
+                           toWide(diagnostic.message));
+            return false;
+        }
+        RunOptions options;
+        options.instructionBudget = 25'000;
+        for (const auto &[name, coordinate] : {std::pair<std::string_view, double>{"x", sprite.x},
+                                              {"y", sprite.y}}) {
+            const auto declaration = std::find_if(program.statements.begin(), program.statements.end(),
+                                                  [&](const Statement &item) {
+                return item.kind == Statement::Kind::Variable && item.name == name;
+            });
+            if (declaration == program.statements.end())
+                continue;
+            Type coordinateType = declaration->declaredType;
+            if (coordinateType == Type::Any && declaration->expression &&
+                declaration->expression->kind == Expression::Kind::Literal)
+                coordinateType = declaration->expression->literal.type();
+            if (coordinateType == Type::Int)
+                options.initialValues[std::string(name)] = Value(static_cast<std::int64_t>(std::llround(coordinate)));
+            else if (coordinateType == Type::Float || coordinateType == Type::Any)
+                options.initialValues[std::string(name)] = Value(coordinate);
+            else {
+                stopEngine();
+                postWebMessage(L"engine-status\n오류\n" + toWide(sprite.name) + L"의 " + toWide(name) +
+                               L" 좌표는 숫자 변수여야 합니다.");
+                return false;
+            }
+        }
+        EngineSprite *context = &sprite;
+        HostFunction host = [context](const std::string &function, const std::vector<Value> &args,
+                                      const std::vector<std::string> &) -> Value {
+            if (function == "deltaTime")
+                return Value(engineDeltaTime);
+            if (function == "keyDown" && args.size() == 1) {
+                const auto key = std::get_if<std::string>(&args[0].data);
+                if (!key)
+                    throw std::runtime_error("keyDown expects a String key.");
+                return Value(engineKeys.contains(toWide(*key)));
+            }
+            if (function == "touching" && args.size() == 1) {
+                const auto name = std::get_if<std::string>(&args[0].data);
+                if (!name)
+                    throw std::runtime_error("touching expects an object name.");
+                const auto other = std::find_if(engineSprites.begin(), engineSprites.end(), [&](const auto &item) {
+                    return &item != context && item.name == *name;
+                });
+                if (other == engineSprites.end())
+                    return Value(false);
+                const bool overlap = std::abs(context->x - other->x) * 2.0 < context->width + other->width &&
+                                     std::abs(context->y - other->y) * 2.0 < context->height + other->height;
+                return Value(overlap);
+            }
+            throw std::out_of_range("Unknown Studio engine function.");
+        };
+        try {
+            sprite.session = std::make_unique<ExecutionSession>(std::move(program), std::move(options), host);
+            (void)sprite.session->dispatch("start");
+            syncSpriteFromSession(sprite);
+        } catch (const std::exception &exception) {
+            stopEngine();
+            postWebMessage(L"engine-status\n오류\n" + toWide(sprite.name) + L": " + toWide(exception.what()));
+            return false;
+        }
+    }
+    engineRunning = true;
+    engineLastFrame = std::chrono::steady_clock::now();
+    SetTimer(mainWindow, engineTimer, 16, nullptr);
+    postWebMessage(L"engine-state\n" + toWide(engineStatePacket()));
+    postWebMessage(L"engine-status\n실행 중\n모든 오브젝트의 on start / on update 이벤트가 실행 중입니다.");
+    return true;
+}
+
+void updateEngine() {
+    if (!engineRunning)
+        return;
+    const auto now = std::chrono::steady_clock::now();
+    engineDeltaTime = std::clamp(std::chrono::duration<double>(now - engineLastFrame).count(), 0.001, 0.1);
+    engineLastFrame = now;
+    try {
+        for (auto &sprite : engineSprites) {
+            if (sprite.session) {
+                (void)sprite.session->dispatch("update");
+                syncSpriteFromSession(sprite);
+            }
+        }
+        postWebMessage(L"engine-state\n" + toWide(engineStatePacket()));
+    } catch (const std::exception &exception) {
+        stopEngine();
+        postWebMessage(L"engine-status\n오류\n" + toWide(exception.what()));
+    }
+}
+
+void postWebMessage(std::wstring message) {
+    if (webReady && webView)
+        webView->PostWebMessageAsString(message.c_str());
+}
+
+void postSceneToWeb() {
+    if (!runtimeSceneLoaded) {
+        postWebMessage(L"scene-clear");
+        return;
+    }
+    std::string json = "{\"name\":" + jsonQuoted(runtimeScene.name) + ",\"background\":[" +
+                       std::to_string(runtimeScene.backgroundColor.r) + "," +
+                       std::to_string(runtimeScene.backgroundColor.g) + "," +
+                       std::to_string(runtimeScene.backgroundColor.b) + "]";
+    if (runtimeScene.gameMode == jm::HaeryeGameMode::Platformer)
+        json += ",\"game\":\"platformer\"";
+    json += ",\"objects\":[";
+    for (std::size_t index = 0; index < runtimeScene.objects.size(); ++index) {
+        const auto &object = runtimeScene.objects[index];
+        if (index) json += ',';
+        json += "{\"name\":" + jsonQuoted(object.name);
+        json += ",\"shape\":" + jsonQuoted(object.shape == jm::HaeryeShape::Circle ? "circle" : "rectangle");
+        if (object.role) {
+            constexpr std::array<std::string_view, 4> roles{"player", "platform", "goal", "hazard"};
+            json += ",\"role\":" + jsonQuoted(std::string(roles[static_cast<std::size_t>(*object.role)]));
+        }
+        if (object.position)
+            json += ",\"position\":[" + std::to_string((*object.position)[0]) + "," +
+                    std::to_string((*object.position)[1]) + "]";
+        if (object.size)
+            json += ",\"size\":[" + std::to_string((*object.size)[0]) + "," +
+                    std::to_string((*object.size)[1]) + "]";
+        if (object.color)
+            json += ",\"color\":[" + std::to_string(object.color->r) + "," +
+                    std::to_string(object.color->g) + "," + std::to_string(object.color->b) + "]";
+        json += '}';
+    }
+    json += "]}";
+    postWebMessage(L"scene\n" + toWide(json));
+}
+
+void publishRuntimeVariables();
+void publishEditorState();
+void publishRuntimeOutput();
+void handleWebMessage(std::wstring_view message);
+void updatePathLabel();
+void newDocument();
+
+std::wstring loadStudioHtml() {
+    const auto directory = studioWebDirectory();
+    std::ifstream htmlFile(directory / L"index.html", std::ios::binary);
+    std::ifstream cssFile(directory / L"studio.css", std::ios::binary);
+    std::ifstream jsFile(directory / L"studio.js", std::ios::binary);
+    if (!htmlFile || !cssFile || !jsFile)
+        return {};
+    std::string html((std::istreambuf_iterator<char>(htmlFile)), std::istreambuf_iterator<char>());
+    std::string css((std::istreambuf_iterator<char>(cssFile)), std::istreambuf_iterator<char>());
+    std::string js((std::istreambuf_iterator<char>(jsFile)), std::istreambuf_iterator<char>());
+    const auto link = html.find("<link rel=\"stylesheet\" href=\"studio.css\">");
+    if (link == std::string::npos)
+        return {};
+    html.replace(link, std::string("<link rel=\"stylesheet\" href=\"studio.css\">").size(),
+                 "<style>\n" + css + "\n</style>");
+    const auto script = html.find("<script src=\"studio.js\"></script>");
+    if (script == std::string::npos)
+        return {};
+    html.replace(script, std::string("<script src=\"studio.js\"></script>").size(),
+                 "<script>\n" + js + "\n</script>");
+    return toWide(html);
+}
+
+void initializeWebView(HWND window) {
+    std::array<wchar_t, 32768> localAppData{};
+    const DWORD appDataLength = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData.data(),
+                                                         static_cast<DWORD>(localAppData.size()));
+    const auto userData = (appDataLength > 0 && appDataLength < localAppData.size()
+                               ? std::filesystem::path(localAppData.data())
+                               : std::filesystem::temp_directory_path()) /
+                          L"Samat" / L"Studio" / L"WebView2";
+    std::error_code ignored;
+    std::filesystem::create_directories(userData, ignored);
+    const HRESULT result = CreateCoreWebView2EnvironmentWithOptions(
+        nullptr, userData.c_str(), nullptr,
+        Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+            [window](HRESULT error, ICoreWebView2Environment *environment) -> HRESULT {
+                if (FAILED(error) || !environment) {
+                    MessageBoxW(window, L"Microsoft Edge WebView2 Runtime을 사용할 수 없습니다.",
+                                L"Samat Studio 시작 실패", MB_OK | MB_ICONERROR);
+                    return error;
+                }
+                webEnvironment = environment;
+                return environment->CreateCoreWebView2Controller(
+                    window, Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+                        [window](HRESULT createError, ICoreWebView2Controller *controller) -> HRESULT {
+                            if (FAILED(createError) || !controller)
+                                return createError;
+                            webController = controller;
+                            controller->get_CoreWebView2(&webView);
+                            RECT bounds{};
+                            GetClientRect(window, &bounds);
+                            controller->put_Bounds(bounds);
+                            ComPtr<ICoreWebView2Settings> settings;
+                            if (SUCCEEDED(webView->get_Settings(&settings))) {
+                                settings->put_AreDefaultContextMenusEnabled(FALSE);
+                                settings->put_AreDevToolsEnabled(FALSE);
+                            }
+                            webView->add_WebMessageReceived(
+                                Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+                                    [window](ICoreWebView2 *, ICoreWebView2WebMessageReceivedEventArgs *args) -> HRESULT {
+                                        LPWSTR raw{};
+                                        if (SUCCEEDED(args->TryGetWebMessageAsString(&raw)) && raw) {
+                                            auto *message = new std::wstring(raw);
+                                            PostMessageW(window, webMessageDispatch, 0,
+                                                         reinterpret_cast<LPARAM>(message));
+                                            CoTaskMemFree(raw);
+                                        }
+                                        return S_OK;
+                                    }).Get(), nullptr);
+                            const auto page = loadStudioHtml();
+                            if (page.empty()) {
+                                webView->PostWebMessageAsString(L"status\n화면 오류\nStudio 웹 화면 파일을 찾지 못했습니다.");
+                                return E_FAIL;
+                            }
+                            return webView->NavigateToString(page.c_str());
+                        }).Get());
+            }).Get());
+    if (FAILED(result))
+        MessageBoxW(window, L"WebView2 초기화를 시작하지 못했습니다.", L"Samat Studio", MB_OK | MB_ICONERROR);
 }
 
 void setText(HWND control, std::wstring_view text) {
@@ -254,13 +766,19 @@ void updateExampleFilter() {
 }
 
 bool saveCurrent();
+void openFile();
+void openHaeryeFile();
+void runSource();
+void convertSurface();
+bool parseAndCheck(Program &program, std::string &message);
 
 const char *surfaceName(Surface surface) { return surface == Surface::Code ? "Code Syntax" : "訓C正音"; }
 
 void updatePathLabel() {
     const std::wstring name = currentPath.empty() ? L"새 문서" : currentPath.filename().wstring();
     const std::wstring mode = currentSurface == Surface::Code ? L"Code Syntax" : L"訓C正音";
-    setText(pathLabel, mode + L"  ·  " + name + (documentDirty ? L"  •  수정됨" : L""));
+    const std::wstring scene = haeryePath.empty() ? L"  ·  해례 없음" : L"  ·  ◈ " + haeryePath.filename().wstring();
+    setText(pathLabel, mode + L"  ·  " + name + scene + (documentDirty ? L"  •  수정됨" : L""));
     if (convertButton)
         SetWindowTextW(convertButton, currentSurface == Surface::Code ? L"訓C正音으로" : L"Code Syntax로");
 }
@@ -281,14 +799,8 @@ bool parseSurface(std::string_view source, Surface surface, Program &program, Di
 }
 
 bool loadPath(const std::filesystem::path &path) {
-    if (documentDirty) {
-        const int choice = MessageBoxW(mainWindow, L"현재 파일에 저장하지 않은 변경 사항이 있습니다.\n저장할까요?",
-                                       L"변경 사항 저장", MB_YESNOCANCEL | MB_ICONWARNING);
-        if (choice == IDCANCEL)
-            return false;
-        if (choice == IDYES && !saveCurrent())
-            return false;
-    }
+    if (documentDirty && !saveCurrent())
+        return false;
     std::string source, error;
     if (!samat::editor::loadScriptFile(path, source, error)) {
         MessageBoxW(mainWindow, toWide(error).c_str(), L"파일을 열지 못했습니다", MB_OK | MB_ICONERROR);
@@ -301,14 +813,277 @@ bool loadPath(const std::filesystem::path &path) {
     currentPath = path;
     documentDirty = false;
     updatePathLabel();
+    refreshRuntimeVariables(true);
+    publishEditorState();
     SetTimer(mainWindow, highlightTimer, 1, nullptr);
     InvalidateRect(gutter, nullptr, TRUE);
+    InvalidateRect(runtimeStage, nullptr, TRUE);
     setText(output, L"예제를 열었습니다. 코드를 수정하고 검사하거나 실행할 수 있습니다.");
     setText(outputCaption, L"준비됨");
     return true;
 }
 
+bool loadHaeryePath(const std::filesystem::path &path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        MessageBoxW(mainWindow, L"해례 파일을 읽지 못했습니다.", L"파일 열기", MB_OK | MB_ICONERROR);
+        return false;
+    }
+    const std::string source((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    jm::HaeryeDocument document;
+    jm::HaeryeDiagnostic diagnostic;
+    if (!jm::parseHaerye(source, document, diagnostic) || !jm::validateHaerye(document, diagnostic)) {
+        setText(output, toWide(diagnostic.toString()));
+        setText(outputCaption, L"해례 오류");
+        MessageBoxW(mainWindow, toWide(diagnostic.toString()).c_str(), L"해례를 읽지 못했습니다", MB_OK | MB_ICONERROR);
+        return false;
+    }
+    runtimeScene = std::move(document);
+    runtimeSceneLoaded = true;
+    haeryePath = path;
+    updatePathLabel();
+    postSceneToWeb();
+    publishEditorState();
+    postWebMessage(L"show-runtime");
+    InvalidateRect(runtimeStage, nullptr, TRUE);
+    setText(output, runtimeScene.gameMode == jm::HaeryeGameMode::Platformer
+                        ? L"플랫폼 게임 장면을 열었습니다. 런타임에서 게임 시작을 누르세요."
+                        : L"해례 장면을 런타임에 연결했습니다. Samat 파일과 함께 실행할 수 있습니다.");
+    setText(outputCaption, L"장면 준비됨");
+    return true;
+}
+
 std::string editorSource() { return toUtf8(windowText(editor)); }
+
+void publishEditorState() {
+    if (!webReady)
+        return;
+    const std::wstring source = toWide(editorSource());
+    const std::wstring file = currentPath.empty() ? L"새 문서" : currentPath.filename().wstring();
+    const std::wstring scene = haeryePath.empty() ? L"" : haeryePath.filename().wstring();
+    const std::wstring mode = currentSurface == Surface::Code ? L"Code Syntax" : L"訓C正音";
+    postWebMessage(L"state\n" + std::to_wstring(source.size()) + L"\n" + source + L"\n" + file +
+                   L"\n" + scene + L"\n" + mode);
+}
+
+void publishRuntimeOutput() {
+    if (!webReady)
+        return;
+    const std::wstring text = windowText(output);
+    postWebMessage(L"output\n" + windowText(outputCaption) + L"\n" + std::to_wstring(text.size()) +
+                   L"\n" + text);
+}
+
+std::unordered_map<std::wstring, std::wstring> parseWebValues(std::wstring_view json) {
+    std::unordered_map<std::wstring, std::wstring> values;
+    std::size_t at = 0;
+    const auto skipSpace = [&] { while (at < json.size() && iswspace(json[at])) ++at; };
+    const auto readString = [&]() -> std::optional<std::wstring> {
+        if (at >= json.size() || json[at++] != L'"') return std::nullopt;
+        std::wstring result;
+        while (at < json.size() && json[at] != L'"') {
+            wchar_t ch = json[at++];
+            if (ch == L'\\' && at < json.size()) {
+                ch = json[at++];
+                if (ch == L'n') result += L'\n';
+                else if (ch == L'r') result += L'\r';
+                else if (ch == L't') result += L'\t';
+                else if (ch == L'u' && at + 4 <= json.size()) {
+                    unsigned value{};
+                    for (int i = 0; i < 4; ++i) {
+                        const wchar_t digit = json[at++];
+                        value = value * 16 + (digit >= L'0' && digit <= L'9' ? digit - L'0' :
+                                              digit >= L'a' && digit <= L'f' ? digit - L'a' + 10 :
+                                              digit >= L'A' && digit <= L'F' ? digit - L'A' + 10 : 0);
+                    }
+                    result += static_cast<wchar_t>(value);
+                } else result += ch;
+            } else result += ch;
+        }
+        if (at >= json.size()) return std::nullopt;
+        ++at;
+        return result;
+    };
+    skipSpace();
+    if (at >= json.size() || json[at++] != L'{') return values;
+    while (at < json.size()) {
+        skipSpace();
+        if (at < json.size() && json[at] == L'}') break;
+        auto key = readString();
+        if (!key) break;
+        skipSpace();
+        if (at >= json.size() || json[at++] != L':') break;
+        skipSpace();
+        auto value = readString();
+        if (!value) break;
+        values.emplace(std::move(*key), std::move(*value));
+        skipSpace();
+        if (at >= json.size() || json[at++] != L',') break;
+    }
+    return values;
+}
+
+void handleWebMessage(std::wstring_view message) {
+    if (message == L"ready") {
+        webReady = true;
+        publishEditorState();
+        publishRuntimeVariables();
+        postSceneToWeb();
+        publishRuntimeOutput();
+        return;
+    }
+    if (message == L"open-st") { openFile(); return; }
+    if (message == L"open-hy") { openHaeryeFile(); return; }
+    if (message == L"new-file") { newDocument(); publishEditorState(); publishRuntimeOutput(); return; }
+    if (message == L"object-mode") { beginEngineProjectMode(); return; }
+    if (message == L"single-mode") { returnToSingleFileMode(); return; }
+    if (message == L"project-dirty\ntrue") { engineProjectDirty = true; return; }
+    if (message == L"project-dirty\nfalse") { engineProjectDirty = false; return; }
+    if (message == L"open-project") {
+        const auto selected = chooseProjectPath(false);
+        if (!selected)
+            return;
+        std::ifstream input(*selected, std::ios::binary);
+        if (!input) {
+            postWebMessage(L"engine-status\n오류\n프로젝트 파일을 읽을 수 없습니다.");
+            return;
+        }
+        const std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        beginEngineProjectMode();
+        currentProjectPath = *selected;
+        documentDirty = false;
+        postWebMessage(L"project-load\n" + toWide(contents));
+        return;
+    }
+    if (message.starts_with(L"engine-save\n")) {
+        const auto packet = message.substr(12);
+        auto selected = currentProjectPath.empty() ? chooseProjectPath(true)
+                                                   : std::optional<std::filesystem::path>(currentProjectPath);
+        if (!selected)
+            return;
+        std::ofstream outputFile(*selected, std::ios::binary | std::ios::trunc);
+        const auto contents = toUtf8(packet);
+        if (!outputFile || !outputFile.write(contents.data(), static_cast<std::streamsize>(contents.size()))) {
+            postWebMessage(L"engine-status\n저장 오류\n프로젝트를 저장하지 못했습니다.");
+            return;
+        }
+        currentProjectPath = *selected;
+        postWebMessage(L"engine-status\n저장됨\n프로젝트를 저장했습니다.");
+        return;
+    }
+    if (message.starts_with(L"engine-run\n")) {
+        beginEngineProjectMode();
+        (void)startEngine(message.substr(11));
+        return;
+    }
+    if (message.starts_with(L"engine-source\n")) {
+        beginEngineProjectMode();
+        suppressEditorChange = true;
+        setText(editor, message.substr(14));
+        suppressEditorChange = false;
+        currentSurface = detectSurface(toUtf8(message.substr(14)), currentSurface);
+        documentDirty = false;
+        updatePathLabel();
+        SetTimer(mainWindow, highlightTimer, 1, nullptr);
+        return;
+    }
+    if (message == L"engine-stop") {
+        stopEngine();
+        postWebMessage(L"engine-status\n정지\n실행을 정지했습니다.");
+        return;
+    }
+    if (message.starts_with(L"engine-key\n")) {
+        const auto keyStart = message.find(L'\n', 11);
+        if (keyStart == std::wstring_view::npos)
+            return;
+        const auto phaseStart = message.find(L'\n', keyStart + 1);
+        if (phaseStart == std::wstring_view::npos)
+            return;
+        const std::wstring key(message.substr(11, keyStart - 11));
+        const std::wstring phase(message.substr(phaseStart + 1));
+        if (phase == L"pressed")
+            engineKeys.insert(key);
+        else
+            engineKeys.erase(key);
+        const std::string event = "key." + toUtf8(key) + (phase == L"pressed" ? ".pressed" : ".released");
+        try {
+            for (auto &sprite : engineSprites)
+                if (sprite.session)
+                    (void)sprite.session->dispatch(event);
+            postWebMessage(L"engine-state\n" + toWide(engineStatePacket()));
+        } catch (const std::exception &exception) {
+            stopEngine();
+            postWebMessage(L"engine-status\n오류\n" + toWide(exception.what()));
+        }
+        return;
+    }
+    if (message == L"save") {
+        const bool saved = saveCurrent();
+        postWebMessage(saved ? L"status\n저장됨\n파일을 저장했습니다." : L"status\n취소됨\n저장을 취소했습니다.");
+        publishEditorState();
+        return;
+    }
+    if (message == L"check") {
+        Program program;
+        std::string detail;
+        const bool valid = parseAndCheck(program, detail);
+        setText(output, toWide(detail));
+        setText(outputCaption, valid ? L"검사 통과" : L"오류");
+        publishRuntimeOutput();
+        return;
+    }
+    if (message == L"run") {
+        if (hasActiveRun) {
+            interpreter.requestStop();
+            return;
+        }
+        runSource();
+        return;
+    }
+    if (message == L"convert") {
+        convertSurface();
+        refreshRuntimeVariables(true);
+        publishEditorState();
+        publishRuntimeVariables();
+        return;
+    }
+    if (message == L"refresh") {
+        refreshRuntimeVariables(true);
+        publishEditorState();
+        return;
+    }
+    if (message.starts_with(L"example\n")) {
+        const auto file = message.substr(8);
+        const auto found = std::find_if(examples.begin(), examples.end(), [&](const Example &item) {
+            return file == item.file;
+        });
+        if (found != examples.end())
+            loadPath(examplesPath / found->file);
+        return;
+    }
+    if (message.starts_with(L"source\n")) {
+        suppressEditorChange = true;
+        setText(editor, message.substr(7));
+        suppressEditorChange = false;
+        documentDirty = true;
+        updatePathLabel();
+        refreshRuntimeVariables(true);
+        SetTimer(mainWindow, highlightTimer, 180, nullptr);
+        return;
+    }
+    if (message.starts_with(L"run\n")) {
+        if (hasActiveRun) {
+            interpreter.requestStop();
+            return;
+        }
+        const auto values = parseWebValues(message.substr(4));
+        refreshRuntimeVariables(true);
+        for (auto &row : runtimeVariables)
+            if (const auto found = values.find(toWide(row.name)); found != values.end())
+                setText(row.valueEdit, found->second);
+        runSource();
+    }
+}
 
 bool parseAndCheck(Program &program, std::string &message) {
     Diagnostic parseDiagnostic;
@@ -381,6 +1156,7 @@ void refreshRuntimeVariables(bool preserveValues) {
     std::string message;
     if (!parseAndCheck(program, message)) {
         setText(runtimeStage, L"먼저 올바른 코드를 작성하고 검사해 주세요.");
+        publishRuntimeVariables();
         layoutControls(mainWindow);
         return;
     }
@@ -393,17 +1169,18 @@ void refreshRuntimeVariables(bool preserveValues) {
         row.type = variableType;
         row.currentValue = "실행 전";
         const int baseId = 1200 + static_cast<int>(runtimeVariables.size()) * 3;
-        row.nameLabel = CreateWindowExW(0, L"STATIC", toWide(row.name).c_str(), WS_CHILD | WS_VISIBLE | SS_LEFT,
+        const DWORD variableStyle = WS_CHILD | (webMode ? 0 : WS_VISIBLE);
+        row.nameLabel = CreateWindowExW(0, L"STATIC", toWide(row.name).c_str(), variableStyle | SS_LEFT,
                                         0, 0, 0, 0, mainWindow,
                                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(baseId)),
                                         GetModuleHandleW(nullptr), nullptr);
         const std::wstring typeLabel = L"초기값 · " + toWide(typeName(row.type));
-        row.currentLabel = CreateWindowExW(0, L"STATIC", typeLabel.c_str(), WS_CHILD | WS_VISIBLE | SS_LEFT,
+        row.currentLabel = CreateWindowExW(0, L"STATIC", typeLabel.c_str(), variableStyle | SS_LEFT,
                                            0, 0, 0, 0, mainWindow,
                                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(baseId + 1)),
                                            GetModuleHandleW(nullptr), nullptr);
         row.valueEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", toWide(defaultVariableText(statement)).c_str(),
-                                        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 0, 0, mainWindow,
+                                        variableStyle | ES_AUTOHSCROLL, 0, 0, 0, 0, mainWindow,
                                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(baseId + 2)),
                                         GetModuleHandleW(nullptr), nullptr);
         if (const auto found = saved.find(row.name); found != saved.end())
@@ -417,6 +1194,22 @@ void refreshRuntimeVariables(bool preserveValues) {
                               : L"실행 화면\n\n오른쪽에서 시작 변수 값을 조절한 뒤 실행하세요.\n실행 결과는 아래 출력 패널에 표시됩니다.");
     runtimeVariablesScroll = 0;
     layoutControls(mainWindow);
+    publishRuntimeVariables();
+}
+
+void publishRuntimeVariables() {
+    if (!webReady)
+        return;
+    std::string json = "[";
+    for (std::size_t index = 0; index < runtimeVariables.size(); ++index) {
+        const auto &row = runtimeVariables[index];
+        if (index) json += ',';
+        const std::string value = row.valueEdit ? toUtf8(windowText(row.valueEdit)) : "";
+        json += "{\"name\":" + jsonQuoted(row.name) + ",\"type\":" + jsonQuoted(std::string(typeName(row.type))) +
+                ",\"value\":" + jsonQuoted(value) + ",\"current\":" + jsonQuoted(row.currentValue) + "}";
+    }
+    json += ']';
+    postWebMessage(L"variables\n" + toWide(json));
 }
 
 bool readRuntimeInitialValues(RunOptions &options, std::wstring &error) {
@@ -484,6 +1277,12 @@ void openFile() {
         loadPath(*selected);
 }
 
+void openHaeryeFile() {
+    const auto selected = samat::editor::chooseOpenHaeryeFile(haeryePath);
+    if (selected)
+        loadHaeryePath(*selected);
+}
+
 bool containsLineComment(std::string_view source) {
     char quote = '\0';
     bool escaped = false;
@@ -527,24 +1326,23 @@ void convertSurface() {
     SendMessageW(editor, EM_SETSEL, 0, -1);
     SendMessageW(editor, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(convertedWide.c_str()));
     currentSurface = destination;
-    documentDirty = true;
+    if (!engineProjectMode)
+        documentDirty = true;
     updatePathLabel();
     SetTimer(mainWindow, highlightTimer, 1, nullptr);
     InvalidateRect(gutter, nullptr, TRUE);
     setText(output, L"문법을 " + toWide(surfaceName(currentSurface)) +
                         L"로 변환했습니다. Ctrl+Z로 되돌릴 수 있습니다.");
     setText(outputCaption, L"변환 완료");
+    if (engineProjectMode)
+        postWebMessage(L"engine-code\n" + convertedWide);
     const LONG newCaret = std::min<LONG>(selection.cpMin, static_cast<LONG>(convertedWide.size()));
     SendMessageW(editor, EM_SETSEL, newCaret, newCaret);
 }
 
 void newDocument() {
-    if (documentDirty) {
-        const int choice = MessageBoxW(mainWindow, L"저장하지 않은 변경 사항이 있습니다.\n새 문서를 열까요?",
-                                       L"새 문서", MB_YESNOCANCEL | MB_ICONWARNING);
-        if (choice == IDCANCEL || (choice == IDYES && !saveCurrent()))
-            return;
-    }
+    if (documentDirty && !saveCurrent())
+        return;
     currentPath.clear();
     currentSurface = Surface::Code;
     suppressEditorChange = true;
@@ -665,12 +1463,14 @@ void runSource() {
     if (!parseAndCheck(program, message)) {
         setText(output, toWide(message));
         setText(outputCaption, L"오류");
+        publishRuntimeOutput();
         return;
     }
     const auto source = editorSource();
     if (source.find("readLine(") != std::string::npos || source.find("readLine ()") != std::string::npos) {
         setText(output, L"이 예제는 콘솔 입력을 사용합니다. 현재 Studio 실행은 readLine 입력을 받지 않으므로\n저장한 뒤 명령줄에서 실행해 주세요.");
         setText(outputCaption, L"콘솔 입력 예제");
+        publishRuntimeOutput();
         return;
     }
     if (hasActiveRun)
@@ -683,6 +1483,7 @@ void runSource() {
     if (!readRuntimeInitialValues(options, valueError)) {
         setText(output, valueError);
         setText(outputCaption, L"변수 값 확인");
+        publishRuntimeOutput();
         return;
     }
     const auto mainFunction = std::find_if(program.statements.begin(), program.statements.end(), [](const Statement &item) {
@@ -693,13 +1494,16 @@ void runSource() {
     if (!interpreter.start(std::move(program), std::move(options))) {
         setText(output, L"이전 실행이 아직 종료되지 않았습니다.");
         setText(outputCaption, L"실행 중");
+        publishRuntimeOutput();
         return;
     }
     hasActiveRun = true;
+    showWorkspacePage(WorkspacePage::Runtime);
     SetWindowTextW(runButton, L"중지");
     EnableWindow(checkButton, FALSE);
     setText(output, L"실행 중…");
     setText(outputCaption, L"실행 중");
+    publishRuntimeOutput();
     SetTimer(mainWindow, runTimer, 40, nullptr);
 }
 
@@ -738,26 +1542,104 @@ void pollRun() {
     }
     setText(output, toWide(text));
     setText(outputCaption, result.error.empty() ? (result.cancelled ? L"중지됨" : L"완료") : L"오류");
+    publishRuntimeVariables();
+    publishRuntimeOutput();
 }
 
 COLORREF syntaxColor(samat::editor::SyntaxKind kind) {
     switch (kind) {
     case samat::editor::SyntaxKind::Keyword:
-        return RGB(198, 120, 221);
+        return RGB(211, 184, 255);
     case samat::editor::SyntaxKind::Builtin:
-        return RGB(86, 182, 194);
+        return RGB(132, 218, 198);
     case samat::editor::SyntaxKind::Number:
-        return RGB(209, 154, 102);
+        return RGB(244, 199, 137);
     case samat::editor::SyntaxKind::String:
-        return RGB(152, 195, 121);
+        return RGB(174, 218, 158);
     case samat::editor::SyntaxKind::Comment:
-        return RGB(120, 130, 143);
+        return RGB(151, 145, 174);
     case samat::editor::SyntaxKind::Operator:
-        return RGB(171, 178, 191);
+        return RGB(203, 197, 218);
     case samat::editor::SyntaxKind::Identifier:
         return foregroundColor;
     }
     return foregroundColor;
+}
+
+COLORREF sceneColor(jm::HaeryeColor color) {
+    return RGB(static_cast<BYTE>(std::clamp(color.r, 0.0F, 1.0F) * 255.0F),
+               static_cast<BYTE>(std::clamp(color.g, 0.0F, 1.0F) * 255.0F),
+               static_cast<BYTE>(std::clamp(color.b, 0.0F, 1.0F) * 255.0F));
+}
+
+void drawRuntimeStage(const DRAWITEMSTRUCT *item) {
+    HDC dc = item->hDC;
+    const RECT bounds = item->rcItem;
+    const int width = bounds.right - bounds.left;
+    const int height = bounds.bottom - bounds.top;
+    RECT canvas{bounds.left + 1, bounds.top + 1, bounds.right - 1, bounds.bottom - 1};
+    const COLORREF background = runtimeSceneLoaded ? sceneColor(runtimeScene.backgroundColor) : stageColor;
+    HBRUSH back = CreateSolidBrush(background);
+    FillRect(dc, &canvas, back);
+    DeleteObject(back);
+    SetBkMode(dc, TRANSPARENT);
+    if (!runtimeSceneLoaded) {
+        SetTextColor(dc, RGB(102, 92, 133));
+        RECT prompt = canvas;
+        DrawTextW(dc, L"해례(.hy)를 열면 이곳에 장면이 표시됩니다.\nSamat(.st) 코드는 런타임에서 함께 실행됩니다.",
+                  -1, &prompt, DT_CENTER | DT_VCENTER | DT_WORDBREAK);
+        return;
+    }
+
+    const int inset = std::max(26, std::min(width, height) / 15);
+    RECT playfield{canvas.left + inset, canvas.top + inset, canvas.right - inset, canvas.bottom - inset};
+    HPEN gridPen = CreatePen(PS_DOT, 1, runtimeScene.backgroundColor.r < 0.5F ? RGB(67, 64, 82) : RGB(218, 214, 228));
+    const auto oldPen = SelectObject(dc, gridPen);
+    MoveToEx(dc, (playfield.left + playfield.right) / 2, playfield.top, nullptr);
+    LineTo(dc, (playfield.left + playfield.right) / 2, playfield.bottom);
+    SelectObject(dc, oldPen);
+    DeleteObject(gridPen);
+
+    const double worldWidth = 16.0;
+    const double worldHeight = worldWidth * (playfield.bottom - playfield.top) /
+                               static_cast<double>(std::max(1L, playfield.right - playfield.left));
+    for (const auto &object : runtimeScene.objects) {
+        if (!object.position || !object.size || !object.shape)
+            continue;
+        const double x = (*object.position)[0];
+        const double y = (*object.position)[1];
+        const double objectWidth = std::abs((*object.size)[0]);
+        const double objectHeight = std::abs((*object.size)[1]);
+        const int centerX = playfield.left + static_cast<int>((x + worldWidth / 2.0) / worldWidth *
+                                                             (playfield.right - playfield.left));
+        const int centerY = playfield.top + static_cast<int>((worldHeight / 2.0 - y) / worldHeight *
+                                                             (playfield.bottom - playfield.top));
+        const int halfWidth = std::max(3, static_cast<int>(objectWidth / worldWidth *
+                                                          (playfield.right - playfield.left) / 2.0));
+        const int halfHeight = std::max(3, static_cast<int>(objectHeight / worldHeight *
+                                                           (playfield.bottom - playfield.top) / 2.0));
+        const COLORREF fillColor = object.color ? sceneColor(*object.color) : RGB(130, 116, 177);
+        HBRUSH objectBrush = CreateSolidBrush(fillColor);
+        HPEN outline = CreatePen(PS_SOLID, 1, fillColor);
+        const auto previousBrush = SelectObject(dc, objectBrush);
+        const auto previousPen = SelectObject(dc, outline);
+        if (*object.shape == jm::HaeryeShape::Circle)
+            Ellipse(dc, centerX - halfWidth, centerY - halfHeight, centerX + halfWidth, centerY + halfHeight);
+        else
+            RoundRect(dc, centerX - halfWidth, centerY - halfHeight, centerX + halfWidth, centerY + halfHeight, 5, 5);
+        SelectObject(dc, previousBrush);
+        SelectObject(dc, previousPen);
+        DeleteObject(objectBrush);
+        DeleteObject(outline);
+        SetTextColor(dc, runtimeScene.backgroundColor.r < 0.5F ? RGB(235, 231, 245) : RGB(55, 49, 74));
+        RECT label{centerX - 70, centerY + halfHeight + 4, centerX + 70, centerY + halfHeight + 24};
+        DrawTextW(dc, toWide(object.name).c_str(), -1, &label, DT_CENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+
+    SetTextColor(dc, runtimeScene.backgroundColor.r < 0.5F ? RGB(202, 194, 222) : RGB(94, 83, 119));
+    RECT title{canvas.left + 14, canvas.top + 10, canvas.right - 14, canvas.top + 32};
+    const std::wstring titleText = L"HAERYE  /  " + toWide(runtimeScene.name);
+    DrawTextW(dc, titleText.c_str(), -1, &title, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
 
 std::vector<LONG> utf8ToRichEditPositions(std::string_view source) {
@@ -971,13 +1853,13 @@ void createControls(HWND window) {
     categoryCaption = create(0, L"STATIC", L"범주", WS_CHILD | WS_VISIBLE | SS_LEFT, 0);
     examplesCaption = create(0, L"STATIC", L"예제", WS_CHILD | WS_VISIBLE | SS_LEFT, 0);
     outputCaption = create(0, L"STATIC", L"출력", WS_CHILD | WS_VISIBLE | SS_LEFT, idOutputLabel);
-    categoryList = create(WS_EX_CLIENTEDGE, L"LISTBOX", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL |
+    categoryList = create(0, L"LISTBOX", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL |
                               LBS_NOTIFY | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT,
                           idCategories);
-    exampleList = create(WS_EX_CLIENTEDGE, L"LISTBOX", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL |
+    exampleList = create(0, L"LISTBOX", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL |
                              LBS_NOTIFY | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT,
                          idExamples);
-    editor = create(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL |
+    editor = create(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL |
                         ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN | ES_NOHIDESEL,
                     idEditor);
     if (richEditModule) {
@@ -987,16 +1869,17 @@ void createControls(HWND window) {
                             ES_NOHIDESEL,
                         idEditor);
     }
-    output = create(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL |
+    output = create(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL |
                         ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | ES_NOHIDESEL,
                     idOutput);
-    newButton = create(0, L"BUTTON", L"새 문서", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idNew);
-    openButton = create(0, L"BUTTON", L"열기", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idOpen);
-    saveButton = create(0, L"BUTTON", L"저장", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idSave);
-    checkButton = create(0, L"BUTTON", L"검사", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idCheck);
-    runButton = create(0, L"BUTTON", L"실행", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idRun);
-    convertButton = create(0, L"BUTTON", L"訓C正音으로", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idConvert);
-    findButton = create(0, L"BUTTON", L"찾기", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idFindToggle);
+    newButton = create(0, L"BUTTON", L"＋ 새 문서", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idNew);
+    openButton = create(0, L"BUTTON", L"▣ Samat", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idOpen);
+    openHaeryeButton = create(0, L"BUTTON", L"◇ 해례", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idOpenHaerye);
+    saveButton = create(0, L"BUTTON", L"↓ 저장", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idSave);
+    checkButton = create(0, L"BUTTON", L"✓ 검사", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idCheck);
+    runButton = create(0, L"BUTTON", L"▶ 실행", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idRun);
+    convertButton = create(0, L"BUTTON", L"⇄ 문법 전환", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idConvert);
+    findButton = create(0, L"BUTTON", L"⌕ 찾기", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idFindToggle);
     gutter = create(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT, idGutter);
     findInput = create(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, idFindInput);
     replaceInput = create(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, idReplaceInput);
@@ -1009,9 +1892,9 @@ void createControls(HWND window) {
                                  idSidebarToggle);
     examplesFilter = create(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                            idExamplesFilter);
-    codePageButton = create(0, L"BUTTON", L"코드 편집", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idCodePage);
-    runtimePageButton = create(0, L"BUTTON", L"런타임 변수", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idRuntimePage);
-    runtimeStage = create(WS_EX_CLIENTEDGE, L"STATIC", L"실행 화면", WS_CHILD | SS_CENTER | SS_CENTERIMAGE,
+    codePageButton = create(0, L"BUTTON", L"⌘ 코드 편집", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idCodePage);
+    runtimePageButton = create(0, L"BUTTON", L"◫ 런타임", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, idRuntimePage);
+    runtimeStage = create(0, L"STATIC", L"", WS_CHILD | SS_OWNERDRAW,
                          1100);
     runtimeInspectorCaption = create(0, L"STATIC", L"변수 조절", WS_CHILD | SS_LEFT, 1101);
     refreshVariablesButton = create(0, L"BUTTON", L"변수 다시 읽기", WS_CHILD | BS_OWNERDRAW,
@@ -1030,13 +1913,19 @@ void createControls(HWND window) {
     defaultFormat.crTextColor = foregroundColor;
     SendMessageW(editor, EM_SETCHARFORMAT, SCF_ALL, reinterpret_cast<LPARAM>(&defaultFormat));
 
-    uiFont = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+    uiFont = CreateFontW(-18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                          OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    editorFont = CreateFontW(-17, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+    editorFont = CreateFontW(-22, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                              OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH,
                              L"Cascadia Mono");
+    cardTitleFont = CreateFontW(-21, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
+                                L"Segoe UI");
+    cardDetailFont = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                 OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
+                                 L"Segoe UI");
     for (const auto control : {titleLabel, pathLabel, categoryCaption, examplesCaption, outputCaption,
-                               categoryList, exampleList, newButton, openButton, saveButton, checkButton,
+                               categoryList, exampleList, newButton, openButton, openHaeryeButton, saveButton, checkButton,
                                runButton, convertButton, findButton, findInput, replaceInput, findNextButton,
                                replaceButton, replaceAllButton, findCloseButton, cursorLabel,
                                sidebarToggleButton, examplesFilter, codePageButton, runtimePageButton,
@@ -1060,13 +1949,21 @@ void createControls(HWND window) {
 }
 
 void layoutControls(HWND window) {
+    if (webMode) {
+        if (webController) {
+            RECT bounds{};
+            GetClientRect(window, &bounds);
+            webController->put_Bounds(bounds);
+        }
+        return;
+    }
     RECT client{};
     GetClientRect(window, &client);
     const int width = client.right;
     const int height = client.bottom;
     const int margin = 16;
     const bool compact = width < 1060;
-    const int topHeight = compact ? 112 : 94;
+    const int topHeight = compact ? 106 : 126;
     const int outputHeight = std::clamp(outputPanelHeight, 100, std::max(100, height / 2));
     const bool runtime = workspacePage == WorkspacePage::Runtime;
     const int sidebarWidth = !runtime && sidebarVisible
@@ -1087,7 +1984,7 @@ void layoutControls(HWND window) {
                pageButtonWidth, 32, TRUE);
     MoveWindow(pathLabel, margin + 190, 17,
                std::max(0, width - 2 * margin - 190 - 2 * pageButtonWidth - 20), 24, TRUE);
-    const int buttonWidth = compact ? 75 : 82;
+    const int buttonWidth = compact ? 72 : 78;
     const int buttonGap = 6;
     int buttonX = margin;
     const int toolbarY = 49;
@@ -1095,16 +1992,18 @@ void layoutControls(HWND window) {
     buttonX += 130;
     MoveWindow(newButton, buttonX, toolbarY, buttonWidth, 34, TRUE);
     buttonX += buttonWidth + buttonGap;
-    MoveWindow(openButton, buttonX, toolbarY, buttonWidth, 34, TRUE);
-    buttonX += buttonWidth + buttonGap;
+    MoveWindow(openButton, buttonX, toolbarY, 88, 34, TRUE);
+    buttonX += 88 + buttonGap;
+    MoveWindow(openHaeryeButton, buttonX, toolbarY, 82, 34, TRUE);
+    buttonX += 82 + buttonGap;
     MoveWindow(saveButton, buttonX, toolbarY, buttonWidth, 34, TRUE);
     buttonX += buttonWidth + buttonGap;
     MoveWindow(checkButton, buttonX, toolbarY, buttonWidth, 34, TRUE);
     buttonX += buttonWidth + buttonGap;
     MoveWindow(runButton, buttonX, toolbarY, buttonWidth, 34, TRUE);
     buttonX += buttonWidth + buttonGap;
-    MoveWindow(convertButton, buttonX, toolbarY, 104, 34, TRUE);
-    buttonX += 104 + buttonGap;
+    MoveWindow(convertButton, buttonX, toolbarY, 112, 34, TRUE);
+    buttonX += 112 + buttonGap;
     MoveWindow(findButton, buttonX, toolbarY, buttonWidth, 34, TRUE);
 
     const int findY = 91;
@@ -1137,7 +2036,7 @@ void layoutControls(HWND window) {
     ShowWindow(codePageButton, SW_SHOW);
     ShowWindow(runtimePageButton, SW_SHOW);
     if (showCodeSidebar) {
-        const int categoryHeight = std::clamp((outputTop - sidebarY) / 4, 100, 170);
+        const int categoryHeight = std::clamp((outputTop - sidebarY) / 5, 82, 126);
         MoveWindow(categoryCaption, margin, sidebarY, sidebarWidth, 23, TRUE);
         MoveWindow(categoryList, margin, sidebarY + 26, sidebarWidth, categoryHeight, TRUE);
         MoveWindow(examplesCaption, margin, sidebarY + 34 + categoryHeight, sidebarWidth, 23, TRUE);
@@ -1163,7 +2062,7 @@ void layoutControls(HWND window) {
         MoveWindow(editor, left + gutterWidth, editorTop, std::max(120, contentWidth - gutterWidth), editorHeight,
                    TRUE);
     } else {
-        const int inspectorWidth = std::clamp(width / 4, 290, 390);
+        const int inspectorWidth = std::clamp(width / 3, 330, 480);
         const int inspectorLeft = width - margin - inspectorWidth;
         const int stageWidth = std::max(240, inspectorLeft - left - 14);
         MoveWindow(runtimeStage, left, editorTop, stageWidth, editorHeight, TRUE);
@@ -1195,6 +2094,7 @@ void layoutControls(HWND window) {
                std::max(55, height - outputTop - margin - 34), TRUE);
     InvalidateRect(codePageButton, nullptr, TRUE);
     InvalidateRect(runtimePageButton, nullptr, TRUE);
+    InvalidateRect(window, nullptr, TRUE);
 }
 
 LRESULT drawButton(const DRAWITEMSTRUCT *item) {
@@ -1204,17 +2104,34 @@ LRESULT drawButton(const DRAWITEMSTRUCT *item) {
     const bool selectedPage = (item->CtlID == idCodePage && workspacePage == WorkspacePage::Code) ||
                               (item->CtlID == idRuntimePage && workspacePage == WorkspacePage::Runtime);
     const bool disabled = (item->itemState & ODS_DISABLED) != 0;
-    const COLORREF fill = (primary || selectedPage) ? (disabled ? RGB(49, 77, 71) : accentColor)
-                                  : (disabled ? RGB(31, 37, 46) : raisedColor);
-    const COLORREF ink = (primary || selectedPage) ? RGB(10, 24, 25) : foregroundColor;
+    const COLORREF fill = (primary || selectedPage) ? (disabled ? RGB(126, 110, 160) : accentColor)
+                                  : (disabled ? RGB(42, 39, 56) : raisedColor);
+    const COLORREF ink = (primary || selectedPage) ? RGB(43, 36, 63) : foregroundColor;
     HBRUSH brush = CreateSolidBrush(fill);
     HPEN pen = CreatePen(PS_SOLID, 1, primary ? accentColor : borderColor);
     const auto oldBrush = SelectObject(dc, brush);
     const auto oldPen = SelectObject(dc, pen);
     RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, 8, 8);
     SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, ink);
-    DrawTextW(dc, windowText(item->hwndItem).c_str(), -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    const std::wstring label = windowText(item->hwndItem);
+    const auto separator = label.find(L' ');
+    RECT content = rect;
+    content.left += 5;
+    content.right -= 4;
+    if (separator != std::wstring::npos) {
+        const std::wstring icon = label.substr(0, separator);
+        RECT iconRect = content;
+        iconRect.right = iconRect.left + 24;
+        SetTextColor(dc, primary || selectedPage ? ink : accentColor);
+        DrawTextW(dc, icon.c_str(), -1, &iconRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        content.left += 23;
+        SetTextColor(dc, ink);
+        const std::wstring caption = label.substr(separator + 1);
+        DrawTextW(dc, caption.c_str(), -1, &content, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    } else {
+        SetTextColor(dc, ink);
+        DrawTextW(dc, label.c_str(), -1, &content, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
     DeleteObject(brush);
@@ -1235,18 +2152,26 @@ void drawListItem(const DRAWITEMSTRUCT *item) {
     SetBkMode(item->hDC, TRANSPARENT);
     SetTextColor(item->hDC, selected ? accentColor : foregroundColor);
     RECT textRect = rect;
-    textRect.left += 14;
-    textRect.right -= 8;
-    textRect.top += isCategory ? 7 : 7;
+    textRect.left += 16;
+    textRect.right -= 12;
+    textRect.top += isCategory ? 8 : 10;
     wchar_t text[192]{};
     SendMessageW(item->hwndItem, LB_GETTEXT, item->itemID, reinterpret_cast<LPARAM>(text));
+    const auto titleFont = SelectObject(item->hDC, isCategory ? uiFont : cardTitleFont);
     DrawTextW(item->hDC, text, -1, &textRect, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
     if (!isCategory && item->itemID < visibleExamples.size()) {
         SetTextColor(item->hDC, mutedColor);
-        textRect.top += 21;
+        SelectObject(item->hDC, cardDetailFont);
+        textRect.top += 34;
         DrawTextW(item->hDC, visibleExamples[item->itemID]->summary, -1, &textRect,
                   DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
+    SelectObject(item->hDC, titleFont);
+    RECT edge = item->rcItem;
+    InflateRect(&edge, -1, -1);
+    HBRUSH edgeBrush = CreateSolidBrush(borderColor);
+    FrameRect(item->hDC, &edge, edgeBrush);
+    DeleteObject(edgeBrush);
 }
 
 LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -1258,14 +2183,44 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         backgroundBrush = CreateSolidBrush(backgroundColor);
         panelBrush = CreateSolidBrush(panelColor);
         raisedBrush = CreateSolidBrush(raisedColor);
+    stageBrush = CreateSolidBrush(stageColor);
         createControls(window);
+        EnumChildWindows(window, [](HWND child, LPARAM) -> BOOL {
+            ShowWindow(child, SW_HIDE);
+            return TRUE;
+        }, 0);
         examplesPath = discoverExamplesPath();
         if (!visibleExamples.empty())
             loadPath(examplesPath / visibleExamples.front()->file);
+        initializeWebView(window);
         return 0;
+    case WM_ERASEBKGND: {
+        const HDC dc = reinterpret_cast<HDC>(wParam);
+        RECT client{};
+        GetClientRect(window, &client);
+        FillRect(dc, &client, backgroundBrush);
+        const int width = client.right;
+        const int height = client.bottom;
+        const int margin = 16;
+        const int topHeight = width < 1060 ? 106 : 126;
+        const int outputHeight = std::clamp(outputPanelHeight, 100, std::max(100, height / 2));
+        const int editorTop = findBarVisible && workspacePage == WorkspacePage::Code ? 142 : topHeight + 8;
+        const int outputTop = std::max(editorTop + 170, height - outputHeight - margin);
+        RECT workArea{0, topHeight, width, outputTop};
+        FillRect(dc, &workArea, panelBrush);
+        RECT footer{0, outputTop, width, height};
+        FillRect(dc, &footer, backgroundBrush);
+        return 1;
+    }
     case WM_SIZE:
         layoutControls(window);
         return 0;
+    case webMessageDispatch: {
+        std::unique_ptr<std::wstring> message(reinterpret_cast<std::wstring *>(lParam));
+        if (message)
+            handleWebMessage(*message);
+        return 0;
+    }
     case WM_GETMINMAXINFO: {
         auto *limits = reinterpret_cast<MINMAXINFO *>(lParam);
         limits->ptMinTrackSize.x = 850;
@@ -1352,15 +2307,32 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         break;
     case WM_CTLCOLORSTATIC: {
         const HDC dc = reinterpret_cast<HDC>(wParam);
-        SetTextColor(dc, (reinterpret_cast<HWND>(lParam) == pathLabel) ? mutedColor : foregroundColor);
+        const HWND control = reinterpret_cast<HWND>(lParam);
+        if (control == runtimeStage) {
+            SetTextColor(dc, RGB(83, 72, 111));
+            SetBkColor(dc, stageColor);
+            return reinterpret_cast<LRESULT>(stageBrush);
+        }
+        if (control == runtimeInspectorCaption ||
+            std::any_of(runtimeVariables.begin(), runtimeVariables.end(), [control](const RuntimeVariableRow &row) {
+                return row.nameLabel == control || row.currentLabel == control;
+            })) {
+            SetTextColor(dc, control == pathLabel ? mutedColor : foregroundColor);
+            SetBkColor(dc, panelColor);
+            return reinterpret_cast<LRESULT>(panelBrush);
+        }
+        SetTextColor(dc, control == pathLabel ? mutedColor : foregroundColor);
         SetBkMode(dc, TRANSPARENT);
         return reinterpret_cast<LRESULT>(backgroundBrush);
     }
     case WM_CTLCOLOREDIT: {
         const HDC dc = reinterpret_cast<HDC>(wParam);
-        SetTextColor(dc, foregroundColor);
-        SetBkColor(dc, raisedColor);
-        return reinterpret_cast<LRESULT>(raisedBrush);
+        const HWND control = reinterpret_cast<HWND>(lParam);
+        const bool runtimeInput = std::any_of(runtimeVariables.begin(), runtimeVariables.end(),
+            [control](const RuntimeVariableRow &row) { return row.valueEdit == control; });
+        SetTextColor(dc, runtimeInput ? RGB(45, 43, 55) : foregroundColor);
+        SetBkColor(dc, runtimeInput ? stageColor : raisedColor);
+        return reinterpret_cast<LRESULT>(runtimeInput ? stageBrush : raisedBrush);
     }
     case WM_CTLCOLORLISTBOX: {
         const HDC dc = reinterpret_cast<HDC>(wParam);
@@ -1372,6 +2344,10 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         const auto *item = reinterpret_cast<const DRAWITEMSTRUCT *>(lParam);
         if (item->CtlType == ODT_BUTTON)
             return drawButton(item);
+        if (item->CtlType == ODT_STATIC && item->CtlID == 1100) {
+            drawRuntimeStage(item);
+            return TRUE;
+        }
         if (item->CtlType == ODT_LISTBOX) {
             drawListItem(item);
             return TRUE;
@@ -1381,7 +2357,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_MEASUREITEM: {
         auto *item = reinterpret_cast<MEASUREITEMSTRUCT *>(lParam);
         if (item->CtlType == ODT_LISTBOX)
-            item->itemHeight = item->CtlID == idCategories ? 36 : 52;
+            item->itemHeight = item->CtlID == idCategories ? 38 : 88;
         return TRUE;
     }
     case WM_COMMAND: {
@@ -1437,6 +2413,10 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         if (controlId == idOpen) {
             openFile();
+            return 0;
+        }
+        if (controlId == idOpenHaerye) {
+            openHaeryeFile();
             return 0;
         }
         if (controlId == idSave) {
@@ -1505,6 +2485,8 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_TIMER:
         if (wParam == runTimer)
             pollRun();
+        else if (wParam == engineTimer)
+            updateEngine();
         else if (wParam == highlightTimer) {
             KillTimer(window, highlightTimer);
             applySyntaxColors();
@@ -1512,32 +2494,43 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         return 0;
     case WM_CLOSE:
-        if (documentDirty) {
-            const int choice = MessageBoxW(window, L"저장하지 않은 변경 사항이 있습니다.\n저장하고 닫을까요?",
-                                           L"변경 사항 저장", MB_YESNOCANCEL | MB_ICONWARNING);
-            if (choice == IDCANCEL)
-                return 0;
-            if (choice == IDYES && !saveCurrent())
+        if ((documentDirty && !engineProjectMode) || engineProjectDirty ||
+            (standaloneSnapshotValid && standaloneDirtySnapshot)) {
+            const int answer = MessageBoxW(window,
+                L"저장하지 않은 변경 사항이 있습니다. 저장 버튼으로 저장하지 않고 종료할까요?",
+                L"저장되지 않은 변경 사항", MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2);
+            if (answer != IDOK)
                 return 0;
         }
+        stopEngine();
         if (hasActiveRun)
             interpreter.stop();
         DestroyWindow(window);
         return 0;
     case WM_DESTROY:
         KillTimer(window, highlightTimer);
+        webReady = false;
+        webView.Reset();
+        webController.Reset();
+        webEnvironment.Reset();
         if (richEditModule)
             FreeLibrary(richEditModule);
         if (uiFont)
             DeleteObject(uiFont);
         if (editorFont)
             DeleteObject(editorFont);
+        if (cardTitleFont)
+            DeleteObject(cardTitleFont);
+        if (cardDetailFont)
+            DeleteObject(cardDetailFont);
         if (backgroundBrush)
             DeleteObject(backgroundBrush);
         if (panelBrush)
             DeleteObject(panelBrush);
         if (raisedBrush)
             DeleteObject(raisedBrush);
+        if (stageBrush)
+            DeleteObject(stageBrush);
         PostQuitMessage(0);
         return 0;
     }
@@ -1546,6 +2539,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
+    const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&controls);
     richEditModule = LoadLibraryW(L"Msftedit.dll");
@@ -1580,5 +2574,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
+    if (SUCCEEDED(comResult))
+        CoUninitialize();
     return static_cast<int>(message.wParam);
 }

@@ -192,6 +192,7 @@ class Parser {
         document.name = expect(TokenKind::String, "Expected a quoted scene name.").text;
         expect(TokenKind::LeftBrace, "Expected '{' after the scene name.");
         bool hasBackground = false;
+        bool hasGame = false;
         while (current_.kind != TokenKind::RightBrace) {
             if (current_.kind == TokenKind::End)
                 fail(current_, "Expected '}' to close the scene.");
@@ -199,18 +200,28 @@ class Parser {
                 document.objects.push_back(parseObject());
                 continue;
             }
-            if (!isIdentifier("background"))
+            if (!isIdentifier("background") && !isIdentifier("game"))
                 fail(current_, current_.kind == TokenKind::Identifier
                                    ? "Unknown scene property '" + current_.text + "'."
-                                   : "Expected background or object inside the scene.");
+                                   : "Expected background, game, or object inside the scene.");
             const auto property = current_;
             advance();
-            if (hasBackground)
-                fail(property, "Duplicate scene property 'background'.");
             expect(TokenKind::Colon, "Expected ':' after background.");
-            const Token &value = expect(TokenKind::String, "Expected a quoted #RRGGBB color.");
-            document.backgroundColor = parseColor(value);
-            hasBackground = true;
+            if (property.text == "background") {
+                if (hasBackground)
+                    fail(property, "Duplicate scene property 'background'.");
+                const Token &value = expect(TokenKind::String, "Expected a quoted #RRGGBB color.");
+                document.backgroundColor = parseColor(value);
+                hasBackground = true;
+            } else {
+                if (hasGame)
+                    fail(property, "Duplicate scene property 'game'.");
+                const Token &value = expect(TokenKind::Identifier, "Expected a supported game mode.");
+                if (value.text != "platformer")
+                    fail(value, "Unknown game mode '" + value.text + "'.");
+                document.gameMode = HaeryeGameMode::Platformer;
+                hasGame = true;
+            }
         }
         advance();
         if (current_.kind != TokenKind::End) {
@@ -254,6 +265,13 @@ class Parser {
                 object.rotation = expect(TokenKind::Number, "Expected a numeric rotation in degrees.").number;
             } else if (property.text == "color") {
                 object.color = parseColor(expect(TokenKind::String, "Expected a quoted #RRGGBB color."));
+            } else if (property.text == "role") {
+                const Token &value = expect(TokenKind::Identifier, "Expected player, platform, goal, or hazard.");
+                if (value.text == "player") object.role = HaeryeRole::Player;
+                else if (value.text == "platform") object.role = HaeryeRole::Platform;
+                else if (value.text == "goal") object.role = HaeryeRole::Goal;
+                else if (value.text == "hazard") object.role = HaeryeRole::Hazard;
+                else fail(value, "Unknown game object role '" + value.text + "'.");
             } else if (property.text == "sprite" || property.text == "texture" || property.text == "asset") {
                 const Token &asset = expect(TokenKind::String, "Expected a quoted asset path.");
                 fail(property, "Asset references are unsupported in Haerye v0.1: '" + asset.text + "'.");
@@ -358,6 +376,9 @@ bool validateHaerye(const HaeryeDocument &document, HaeryeDiagnostic &diagnostic
         diagnostic = {1, 1, "Background color must use exact 8-bit #RRGGBB channels."};
         return false;
     }
+    std::size_t players = 0;
+    std::size_t platforms = 0;
+    std::size_t goals = 0;
     std::vector<std::string> names;
     names.reserve(document.objects.size());
     for (const HaeryeObject &object : document.objects) {
@@ -371,6 +392,16 @@ bool validateHaerye(const HaeryeDocument &document, HaeryeDiagnostic &diagnostic
             return false;
         }
         names.push_back(object.name);
+        if (object.role) {
+            if (*object.role == HaeryeRole::Player) ++players;
+            else if (*object.role == HaeryeRole::Platform) ++platforms;
+            else if (*object.role == HaeryeRole::Goal) ++goals;
+            if (object.shape.has_value() && *object.shape != HaeryeShape::Rectangle) {
+                diagnostic = {object.sourceLine, object.sourceColumn,
+                              "Platformer role '" + object.name + "' must use a rectangle."};
+                return false;
+            }
+        }
         if (!object.shape || *object.shape == HaeryeShape::Unknown) {
             diagnostic = {object.sourceLine, object.sourceColumn,
                           "Object '" + object.name + "' needs shape rectangle or circle."};
@@ -404,6 +435,10 @@ bool validateHaerye(const HaeryeDocument &document, HaeryeDiagnostic &diagnostic
             return false;
         }
     }
+    if (document.gameMode == HaeryeGameMode::Platformer && (players != 1 || platforms == 0 || goals == 0)) {
+        diagnostic = {1, 1, "A platformer scene needs one player, at least one platform, and one goal."};
+        return false;
+    }
     diagnostic = {};
     return true;
 }
@@ -417,6 +452,8 @@ std::string serializeHaerye(const HaeryeDocument &document) {
     constexpr HaeryeColor defaultBackground{14.0F / 255.0F, 18.0F / 255.0F, 27.0F / 255.0F};
     if (document.backgroundColor != defaultBackground)
         output << "    background: " << quote(formatColor(document.backgroundColor)) << "\n";
+    if (document.gameMode == HaeryeGameMode::Platformer)
+        output << "    game: platformer\n";
     for (const HaeryeObject &object : document.objects) {
         output << "\n    object " << quote(object.name) << " {\n"
                << "        shape: " << (*object.shape == HaeryeShape::Rectangle ? "rectangle" : "circle") << "\n"
@@ -426,8 +463,12 @@ std::string serializeHaerye(const HaeryeDocument &document) {
                << ")\n";
         if (object.rotation)
             output << "        rotation: " << formatFloat(*object.rotation) << "\n";
-        output << "        color: " << quote(formatColor(*object.color)) << "\n"
-               << "    }\n";
+        output << "        color: " << quote(formatColor(*object.color)) << "\n";
+        if (object.role) {
+            constexpr std::array<std::string_view, 4> roles{"player", "platform", "goal", "hazard"};
+            output << "        role: " << roles[static_cast<std::size_t>(*object.role)] << "\n";
+        }
+        output << "    }\n";
     }
     output << "}\n";
     return output.str();

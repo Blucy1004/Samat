@@ -74,6 +74,7 @@ struct Token {
     std::string text;
     double number{0.0};
     std::size_t line{1};
+    bool interpolate{false};
 };
 
 bool digitForBase(char value, int base) {
@@ -155,7 +156,10 @@ std::vector<Token> lex(const std::string &source) {
                     ++position;
                     continue;
                 }
-                if (isIdentifierStart(ch) || ch >= 0x80) {
+                const bool interpolationPrefix =
+                    ch == 'f' && position + 1 < line.size() &&
+                    (line[position + 1] == '"' || line[position + 1] == '\'');
+                if ((isIdentifierStart(ch) || ch >= 0x80) && !interpolationPrefix) {
                     ++position;
                     while (position < line.size() &&
                            (isIdentifierPart(static_cast<unsigned char>(line[position])) ||
@@ -247,9 +251,9 @@ std::vector<Token> lex(const std::string &source) {
                         {Token::Kind::Number, line.substr(start, position - start), number, lineNumber});
                     continue;
                 }
-                if (ch == '"' || ch == '\'') {
-                    const char quote = static_cast<char>(ch);
-                    ++position;
+                if (ch == '"' || ch == '\'' || interpolationPrefix) {
+                    const char quote = static_cast<char>(interpolationPrefix ? line[position + 1] : ch);
+                    position += interpolationPrefix ? 2 : 1;
                     std::string value;
                     bool closed = false;
                     while (position < line.size()) {
@@ -273,7 +277,8 @@ std::vector<Token> lex(const std::string &source) {
                     }
                     if (!closed)
                         throw std::runtime_error("Unclosed string literal.");
-                    tokens.push_back({Token::Kind::String, std::move(value), 0.0, lineNumber});
+                    tokens.push_back({Token::Kind::String, std::move(value), 0.0, lineNumber,
+                                      interpolationPrefix});
                     continue;
                 }
                 auto push = [&](Token::Kind kind, std::size_t length = 1) {
@@ -598,6 +603,97 @@ class ExpressionParser {
         }
         return value;
     }
+    ExpressionPtr parseEmbedded(const std::string &source, std::size_t line) {
+        auto tokens = lex(source);
+        for (auto &token : tokens)
+            token.line = line;
+        std::size_t position = 0;
+        ExpressionParser parser(tokens, position);
+        auto value = parser.parse();
+        if (tokens.at(position).kind != Token::Kind::Newline &&
+            tokens.at(position).kind != Token::Kind::End)
+            throw std::runtime_error("Expected one expression inside string interpolation.");
+        return value;
+    }
+    ExpressionPtr parseInterpolatedString(const Token &token) {
+        auto literal = [](std::string text) {
+            auto value = node(Expression::Kind::Literal);
+            value->literal = Value(std::move(text));
+            return value;
+        };
+        std::vector<ExpressionPtr> pieces;
+        std::string text;
+        auto flushText = [&] {
+            if (!text.empty()) {
+                pieces.push_back(literal(std::move(text)));
+                text.clear();
+            }
+        };
+        for (std::size_t i = 0; i < token.text.size();) {
+            if (token.text[i] == '{' && i + 1 < token.text.size() && token.text[i + 1] == '{') {
+                text.push_back('{');
+                i += 2;
+                continue;
+            }
+            if (token.text[i] == '}' && i + 1 < token.text.size() && token.text[i + 1] == '}') {
+                text.push_back('}');
+                i += 2;
+                continue;
+            }
+            if (token.text[i] != '{') {
+                text.push_back(token.text[i++]);
+                continue;
+            }
+
+            flushText();
+            const std::size_t start = ++i;
+            std::size_t depth = 1;
+            char quote = '\0';
+            bool escaped = false;
+            for (; i < token.text.size(); ++i) {
+                const char ch = token.text[i];
+                if (quote != '\0') {
+                    if (escaped)
+                        escaped = false;
+                    else if (ch == '\\')
+                        escaped = true;
+                    else if (ch == quote)
+                        quote = '\0';
+                    continue;
+                }
+                if (ch == '"' || ch == '\'')
+                    quote = ch;
+                else if (ch == '{')
+                    ++depth;
+                else if (ch == '}' && --depth == 0)
+                    break;
+            }
+            if (depth != 0)
+                throw std::runtime_error("Unclosed string interpolation; expected '}'.");
+            auto expressionText = token.text.substr(start, i - start);
+            const auto first = expressionText.find_first_not_of(" \t");
+            const auto last = expressionText.find_last_not_of(" \t");
+            if (first == std::string::npos)
+                throw std::runtime_error("String interpolation cannot be empty.");
+            auto converted = node(Expression::Kind::Call);
+            converted->left = node(Expression::Kind::Identifier, "string");
+            converted->arguments.push_back({{}, parseEmbedded(expressionText.substr(first, last - first + 1),
+                                                               token.line)});
+            pieces.push_back(std::move(converted));
+            ++i;
+        }
+        flushText();
+        if (pieces.empty())
+            return literal({});
+        auto result = pieces.front();
+        for (std::size_t i = 1; i < pieces.size(); ++i) {
+            auto joined = node(Expression::Kind::Binary, "+");
+            joined->left = std::move(result);
+            joined->right = std::move(pieces[i]);
+            result = std::move(joined);
+        }
+        return result;
+    }
     ExpressionPtr parsePrimary() {
         if (take(Token::Kind::Number)) {
             auto value = node(Expression::Kind::Literal);
@@ -625,9 +721,12 @@ class ExpressionParser {
             return value;
         }
         if (take(Token::Kind::String)) {
-            auto value = node(Expression::Kind::Literal);
-            value->literal = Value(tokens_[position_ - 1].text);
-            return value;
+            const auto &token = tokens_[position_ - 1];
+            return token.interpolate ? parseInterpolatedString(token) : [&] {
+                auto value = node(Expression::Kind::Literal);
+                value->literal = Value(token.text);
+                return value;
+            }();
         }
         if (peek().kind == Token::Kind::Identifier) {
             const std::string name = tokens_[position_++].text;

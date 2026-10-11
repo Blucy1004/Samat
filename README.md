@@ -35,10 +35,11 @@ fn main() -> Int:
 ## 주요 특징
 
 - `.st` 확장자로 작성하는 Samat 소스 코드
+- `f"...{expression}..."` 형식의 문자열 보간
 - 인터프리터와 네이티브 컴파일 백엔드
 - 같은 AST와 런타임을 사용하는 Code Syntax와 訓C正音
 - 해례(Haerye) `.hy` 파일의 파싱, 검증, 직렬화
-- Windows용 Samat Studio: 범주별 예제 탐색, 편집, 검사, 실행
+- Windows용 Samat Studio: 프로젝트별 2D 오브젝트와 오브젝트별 Samat 스크립트 실행
 - Windows와 Linux 빌드 지원
 
 ## 빠른 시작
@@ -51,7 +52,7 @@ cmake --build build --config Release
 .\build\Release\Samat.exe run .\main.st
 ```
 
-Samat Studio를 실행하려면 다음을 실행하세요.
+Samat Studio를 실행하고 프로젝트에 오브젝트를 추가한 뒤 각 오브젝트의 `.st` 코드를 편집하세요. 프로젝트 파일은 `.samatproj`로 저장합니다.
 
 ```powershell
 .\build\Release\SamatStudio.exe
@@ -76,6 +77,32 @@ cmake --build build -j
 ```
 
 프로젝트 루트의 `main.st`에는 Samat 소개와 대화형 계산기 예제가 있습니다.
+
+## Samat Studio 엔진
+
+Studio 프로젝트에는 스테이지와 오브젝트 속성, 각 오브젝트의 Samat 코드가 함께 저장됩니다. 오브젝트를 선택해 코드를 편집하고 **전체 실행**을 누르면 각 오브젝트의 `on start`와 프레임별 `on update` 이벤트가 실행됩니다.
+
+오브젝트 스크립트에서 제공하는 엔진 함수:
+
+- `deltaTime()` — 이전 프레임부터 지난 시간(초)
+- `keyDown("a")` — 키 입력 상태 확인. WASD와 `arrowleft`, `arrowright`, `arrowup`, `arrowdown`을 지원합니다.
+- `touching("오브젝트 이름")` — 다른 오브젝트와 사각형 충돌 여부
+
+좌표는 스테이지 왼쪽 위가 `(0, 0)`이고 아래쪽으로 갈수록 Y 값이 커집니다. 예를 들어 오브젝트 코드에서 다음처럼 이동을 구현할 수 있습니다.
+
+```samat
+let x = 120.0
+let y = 100.0
+let speed = 180.0
+
+on update:
+    if keyDown("a"):
+        x -= speed * deltaTime()
+    if keyDown("d"):
+        x += speed * deltaTime()
+```
+
+자세한 내용은 [Studio 엔진 안내](docs/Studio-Engine.md)를 참고하세요.
 
 ## 訓C正音 해례
 

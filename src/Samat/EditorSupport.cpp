@@ -120,8 +120,12 @@ std::optional<SyntaxToken> syntaxTokenAt(std::string_view source, std::size_t of
             end = source.size();
         return SyntaxToken{{offset, end}, SyntaxKind::Comment};
     }
-    if (source[offset] == '"' || source[offset] == '\'') {
-        const char quote = source[offset];
+    const bool interpolatedPrefix = source[offset] == 'f' && offset + 1 < source.size() &&
+                                    (source[offset + 1] == '"' || source[offset + 1] == '\'');
+    if (interpolatedPrefix || source[offset] == '"' || source[offset] == '\'') {
+        const char quote = source[offset + (interpolatedPrefix ? 1 : 0)];
+        if (interpolatedPrefix)
+            ++end;
         bool escaped = false;
         while (end < source.size()) {
             if (escaped) {
